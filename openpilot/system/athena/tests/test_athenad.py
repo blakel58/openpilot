@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from websocket import ABNF
 from websocket._exceptions import WebSocketConnectionClosedException
 
+from opendbc.car.structs import car
 from openpilot.common.parameterized import parameterized
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.cereal import messaging
@@ -68,6 +69,7 @@ class TestAthenadMethods(OpenpilotTestCase):
       "GithubSshKeys": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC307aE+nuHzTAgaJhzSf5v7ZZQW9gaperjhCmyPyl4PzY7T1mDGenTlVTN7yoVFZ9UfO9oMQqo0n1OwDIiqbIFxqnhrHU0cYfj88rI85m5BEKlNu5RdaVTj1tcbaPpQc5kZEolaI1nDDjzV0lwS7jo5VYDHseiJHlik3HH1SgtdtsuamGR2T80q1SyW+5rHoMOJG73IH2553NnWuikKiuikGHUYBd00K1ilVAK2xSiMWJp55tQfZ0ecr9QjEsJ+J/efL4HqGNXhffxvypCXvbUYAFSddOwXUPo5BTKevpxMtH+2YrkpSjocWA04VnTYFiPG6U4ItKmbLOTFZtPzoez private", # noqa: E501
       "GithubUsername": "commaci",
       "AthenadUploadQueue": [],
+      "CarParamsPersistent": car.CarParams.new_message().to_bytes(),  # a car, not a private body
     }
 
     self.params = Params()

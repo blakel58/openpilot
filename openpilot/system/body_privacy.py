@@ -14,6 +14,8 @@ While body privacy is active:
 
 Live streaming (teleop) is unaffected: it is peer-to-peer and nothing is stored.
 """
+from __future__ import annotations
+
 from openpilot.common.params import Params
 from opendbc.car.structs import car
 
@@ -48,27 +50,31 @@ ALLOWED_ATHENA_SERVICES = frozenset({
 })
 
 _cached_cp_bytes: bytes | None = None
-_cached_not_car = False
+_cached_not_car = True
 
 
 def _persistent_not_car(params: Params) -> bool:
-  """notCar from the last CarParams seen by this device (cached; parsing is not free)."""
+  """notCar from the last CarParams seen by this device (cached; parsing is not free).
+
+  Fails private: a device that has never identified a vehicle (or can't parse
+  what it saved) is treated as a body until card says otherwise.
+  """
   global _cached_cp_bytes, _cached_not_car
   cp_bytes = params.get("CarParamsPersistent")
   if cp_bytes is None:
-    return False
+    return True
   if cp_bytes != _cached_cp_bytes:
     try:
       with car.CarParams.from_bytes(cp_bytes) as CP:
         _cached_not_car = bool(CP.notCar)
     except Exception:
-      _cached_not_car = False
+      _cached_not_car = True
     _cached_cp_bytes = cp_bytes
   return _cached_not_car
 
 
 def is_body(params: Params, CP: car.CarParams | None = None) -> bool:
-  """True if this device is (or was last) attached to a comma body."""
+  """True if this device is (or was last) attached to a comma body, or has never identified a vehicle."""
   if CP is not None and CP.notCar:
     return True
   return _persistent_not_car(params)

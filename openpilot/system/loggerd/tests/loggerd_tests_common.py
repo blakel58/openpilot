@@ -3,6 +3,7 @@ import random
 from pathlib import Path
 
 
+from opendbc.car.structs import car
 from openpilot.common.test import OpenpilotTestCase
 import openpilot.system.loggerd.deleter as deleter
 import openpilot.system.loggerd.uploader as uploader
@@ -79,6 +80,7 @@ class UploaderTestCase(OpenpilotTestCase):
     self.params = Params()
     self.params.put("IsOffroad", True, block=True)
     self.params.put("DongleId", "0000000000000000", block=True)
+    self.params.put("CarParamsPersistent", car.CarParams.new_message().to_bytes(), block=True)  # a car, not a private body
 
   def make_file_with_data(self, f_dir: str, fn: str, size_mb: float = .1, lock: bool = False,
                           upload_xattr: bytes | None = None, preserve_xattr: bytes | None = None) -> Path:

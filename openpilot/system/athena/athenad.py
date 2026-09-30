@@ -272,6 +272,10 @@ def cb(sm, item, tid, end_event: threading.Event, sz: int, cur: int) -> None:
   if end_event.is_set():
     raise AbortTransferException
 
+  # Abort transfer if body privacy turned on mid-upload
+  if body_privacy_active(Params()):
+    raise AbortTransferException
+
   cur_upload_items[tid] = replace(item, progress=cur / sz if sz else 1)
 
 
@@ -285,10 +289,11 @@ def upload_handler(end_event: threading.Event) -> None:
     try:
       if body_privacy_active(Params()):
         # drop anything queued; nothing leaves a private body
-        with suppress(queue.Empty):
-          while True:
-            upload_queue.get_nowait()
-        UploadQueueCache.cache(upload_queue)
+        if not upload_queue.empty():
+          with suppress(queue.Empty):
+            while True:
+              upload_queue.get_nowait()
+          UploadQueueCache.cache(upload_queue)
         end_event.wait(5)
         continue
 
@@ -859,6 +864,10 @@ def log_handler(end_event: threading.Event) -> None:
   last_scan = 0.
   while not end_event.is_set():
     if body_privacy_active(Params()):
+      # mark as sent so logs from while private are never forwarded, even after opting in
+      for log_entry in get_logs_to_send_sorted():
+        with suppress(OSError):
+          setxattr(os.path.join(Paths.swaglog_root(), log_entry), LOG_ATTR_NAME, LOG_ATTR_VALUE_MAX_UNIX_TIME)
       end_event.wait(10)
       continue
     try:

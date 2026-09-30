@@ -65,6 +65,11 @@ class TogglesLayoutMici(NavScroller):
                                  toggle_callback=restart_needed_callback,
                                  description="Record microphone audio while driving.\n" +
                                              "Audio is included in dashcam videos in comma connect.")
+    # TODO: untested on comma four, enable once verified on a body
+    # body_data_sharing = BigParamControl("share comma body data", "BodyDataSharing",
+    #                                     description="Record and upload video and logs from your comma body.\n" +
+    #                                                 "Off by default: nothing is recorded or uploaded. Live teleop still works.")
+    # body_data_sharing.set_visible(lambda: bool(ui_state.is_body))
     enable_openpilot = BigParamControl("enable openpilot", "OpenpilotEnabledToggle", toggle_callback=restart_needed_callback,
                                        description="Enable to use openpilot driver assistance.\n" +
                                                    "Disable to use your car's stock driver assistance.")
@@ -77,6 +82,7 @@ class TogglesLayoutMici(NavScroller):
       always_on_dm_toggle,
       record_front,
       record_mic,
+      # body_data_sharing,
       enable_openpilot,
     ])
 
@@ -88,6 +94,7 @@ class TogglesLayoutMici(NavScroller):
       ("AlwaysOnDM", always_on_dm_toggle),
       ("RecordFront", record_front),
       ("RecordAudio", record_mic),
+      # ("BodyDataSharing", body_data_sharing),
       ("OpenpilotEnabledToggle", enable_openpilot),
     )
 

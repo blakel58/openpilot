@@ -20,11 +20,11 @@ def iscar(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and not CP.notCar
 
 def logging(started: bool, params: Params, CP: car.CarParams) -> bool:
-  if CP.notCar:
-    # comma body: record only if the owner opted in to data sharing
-    run = not body_privacy_active(params, CP) and not params.get_bool("DisableLogging")
-  else:
-    run = True
+  # comma body: record only if the owner opted in to data sharing. this also holds
+  # off loggerd until card identifies a never-seen vehicle, instead of assuming a car
+  if body_privacy_active(params, CP):
+    return False
+  run = (not CP.notCar) or not params.get_bool("DisableLogging")
   return started and run
 
 def uploads_allowed(started: bool, params: Params, CP: car.CarParams) -> bool:
