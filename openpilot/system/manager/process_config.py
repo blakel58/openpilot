@@ -20,12 +20,18 @@ def iscar(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and not CP.notCar
 
 def logging(started: bool, params: Params, CP: car.CarParams) -> bool:
-  # comma body: record only if the owner opted in to data sharing. this also holds
-  # off loggerd until card identifies a never-seen vehicle, instead of assuming a car
-  if body_privacy_active(params, CP):
+  if not started:
     return False
-  run = (not CP.notCar) or not params.get_bool("DisableLogging")
-  return started and run
+  # hold loggerd until card identifies this drive's vehicle, so a comma body is
+  # never recorded as a car while fingerprinting (CarParams is cleared going onroad)
+  cp_bytes = params.get("CarParams")
+  if cp_bytes is None:
+    return False
+  with car.CarParams.from_bytes(cp_bytes) as drive_CP:
+    # comma body: record only if the owner opted in to data sharing
+    if body_privacy_active(params, drive_CP):
+      return False
+    return (not drive_CP.notCar) or not params.get_bool("DisableLogging")
 
 def uploads_allowed(started: bool, params: Params, CP: car.CarParams) -> bool:
   # uses the persisted CarParams too, so a body stays private while offroad
