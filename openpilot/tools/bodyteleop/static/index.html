@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>comma body teleop</title>
+<style>
+  :root {
+    --bg: #f4f4f2; --panel: #ffffff; --text: #16181a; --muted: #5d6166; --line: #dcdcd8;
+    --accent: #1f7a4d; --warn: #a15c00; --bad: #b3261e; --key: #eeeeea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111213; --panel: #1b1d1f; --text: #ececea; --muted: #9a9ea3; --line: #2c2f32;
+            --accent: #4cc38a; --warn: #e0a24a; --bad: #ef6b62; --key: #26292c; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 system-ui, -apple-system, sans-serif; }
+  main { max-width: 960px; margin: 0 auto; padding: 16px; display: grid; gap: 12px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button, select { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);
+                   border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .video { position: relative; background: #000; border-radius: 12px; overflow: hidden; aspect-ratio: 4 / 3; }
+  video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .overlay { position: absolute; inset: 0; display: grid; place-items: center; color: #bbb; text-align: center; padding: 16px; }
+  .overlay[hidden] { display: none; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+  .stat .label { color: var(--muted); font-size: 12px; }
+  .stat .value { font-variant-numeric: tabular-nums; }
+  .ok { color: var(--accent); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  kbd { background: var(--key); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font: 12px ui-monospace, monospace; }
+  .help { color: var(--muted); font-size: 13px; }
+  input[type=range] { accent-color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>comma body</h1>
+    <div class="row">
+      <label for="camera">camera</label>
+      <select id="camera">
+        <option value="driver">front</option>
+        <option value="wideRoad">rear wide</option>
+        <option value="road">rear</option>
+      </select>
+      <button id="connect" class="primary">Connect</button>
+    </div>
+  </header>
+
+  <div class="video">
+    <video id="video" autoplay playsinline muted></video>
+    <div class="overlay" id="overlay">Not connected</div>
+  </div>
+
+  <div class="panel stats">
+    <div class="stat"><div class="label">status</div><div class="value" id="status">idle</div></div>
+    <div class="stat"><div class="label">path</div><div class="value" id="path">–</div></div>
+    <div class="stat"><div class="label">battery</div><div class="value" id="battery">–</div></div>
+    <div class="stat"><div class="label">command</div><div class="value" id="command">0.00, 0.00</div></div>
+  </div>
+
+  <div class="panel row">
+    <label for="speed">speed</label>
+    <input id="speed" type="range" min="0.1" max="1" step="0.05" value="0.4">
+    <span id="speedValue">0.40</span>
+    <span class="help">Drive with <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrow keys, or a gamepad (left stick steers, triggers drive).
+      Releasing all keys stops the body; it also stops on its own if commands stop arriving.</span>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let pc = null, dc = null, sendTimer = null, statsTimer = null;
+let command = [0, 0];  // [throttle (negative = forward), turn (positive = left)]
+const keys = new Set();
+
+function setStatus(text, cls = '') { $('status').textContent = text; $('status').className = 'value ' + cls; }
+function send(type, data) { if (dc && dc.readyState === 'open') dc.send(JSON.stringify({ type, data })); }
+function isRear() { return $('camera').value !== 'driver'; }
+
+function updateCommand() {
+  const speed = parseFloat($('speed').value);
+  let throttle = 0, turn = 0;
+  if (keys.has('w') || keys.has('arrowup')) throttle -= speed;
+  if (keys.has('s') || keys.has('arrowdown')) throttle += speed;
+  if (keys.has('a') || keys.has('arrowleft')) turn += speed;
+  if (keys.has('d') || keys.has('arrowright')) turn -= speed;
+
+  const gp = [...(navigator.getGamepads?.() || [])].find(Boolean);
+  if (gp && keys.size === 0) {
+    const lx = Math.abs(gp.axes[0] || 0) < 0.15 ? 0 : gp.axes[0];
+    const rt = gp.buttons[7]?.value || 0, lt = gp.buttons[6]?.value || 0;
+    throttle = (lt - rt) * speed;
+    turn = -lx * speed;
+  }
+  // looking out a rear camera, drive the way the picture faces
+  command = [isRear() ? -throttle : throttle, turn];
+  $('command').textContent = `${command[0].toFixed(2)}, ${command[1].toFixed(2)}`;
+}
+
+async function updateStats() {
+  if (!pc) return;
+  const stats = await pc.getStats();
+  let pair = null;
+  stats.forEach((s) => { if (s.type === 'transport' && s.selectedCandidatePairId) pair = stats.get(s.selectedCandidatePairId); });
+  if (!pair) stats.forEach((s) => { if (s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') pair = s; });
+  if (!pair) return;
+  const local = stats.get(pair.localCandidateId), remote = stats.get(pair.remoteCandidateId);
+  const relayed = local?.candidateType === 'relay' || remote?.candidateType === 'relay';
+  const addr = remote?.address || remote?.ip || '?';
+  const lan = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.)/.test(addr);
+  $('path').textContent = relayed ? 'relayed (!)' : lan ? `direct, LAN (${addr})` : `direct (${addr})`;
+  $('path').className = 'value ' + (relayed ? 'bad' : lan ? 'ok' : 'warn');
+}
+
+function disconnect(reason = 'Not connected') {
+  clearInterval(sendTimer); clearInterval(statsTimer);
+  sendTimer = statsTimer = null;
+  if (dc) { try { send('testJoystick', { axes: [0, 0], buttons: [false] }); } catch (e) {} }
+  if (pc) pc.close();
+  pc = dc = null;
+  $('video').srcObject = null;
+  $('overlay').textContent = reason; $('overlay').hidden = false;
+  $('path').textContent = '–'; $('path').className = 'value';
+  $('connect').textContent = 'Connect';
+  setStatus('idle');
+}
+
+async function connect() {
+  setStatus('connecting…', 'warn');
+  $('connect').textContent = 'Disconnect';
+  // no STUN/TURN servers: on your own network the browser and body reach each other directly
+  pc = new RTCPeerConnection({ iceServers: [] });
+  const transceiver = pc.addTransceiver('video', { direction: 'recvonly' });
+  const h264 = (RTCRtpReceiver.getCapabilities('video')?.codecs || []).filter((c) => c.mimeType === 'video/H264');
+  if (h264.length) transceiver.setCodecPreferences(h264);
+
+  pc.ontrack = (evt) => {
+    if ('playoutDelayHint' in evt.receiver) evt.receiver.playoutDelayHint = 0;
+    $('video').srcObject = new MediaStream([evt.track]);
+    $('overlay').hidden = true;
+  };
+  pc.onconnectionstatechange = () => {
+    if (!pc) return;
+    const s = pc.connectionState;
+    if (s === 'connected') setStatus('connected', 'ok');
+    else if (s === 'failed' || s === 'disconnected' || s === 'closed') disconnect(`Connection ${s}`);
+  };
+
+  dc = pc.createDataChannel('data', { ordered: true });
+  dc.onopen = () => {
+    send('livestreamVideoEnable', { enabled: true });
+    if ($('camera').value !== 'driver') send('livestreamCameraSwitch', { camera: $('camera').value });
+    sendTimer = setInterval(() => { updateCommand(); send('testJoystick', { axes: command, buttons: [false] }); }, 50);
+    statsTimer = setInterval(updateStats, 1000);
+  };
+  dc.onmessage = (evt) => {
+    try {
+      const msg = JSON.parse(typeof evt.data === 'string' ? evt.data : new TextDecoder().decode(evt.data));
+      if (msg.type === 'carState') {
+        const level = Math.round((msg.data.fuelGauge || 0) * 100);
+        $('battery').textContent = `${level}%${msg.data.charging ? ' (charging)' : ''}`;
+      } else if (msg.type === 'disconnect') {
+        disconnect(msg.data || 'Disconnected by the body');
+      }
+    } catch (e) { /* ignore malformed messages */ }
+  };
+
+  try {
+    await pc.setLocalDescription(await pc.createOffer());
+    await new Promise((resolve) => {
+      if (pc.iceGatheringState === 'complete') return resolve();
+      pc.addEventListener('icegatheringstatechange', () => pc.iceGatheringState === 'complete' && resolve());
+      setTimeout(resolve, 2000);
+    });
+    const resp = await fetch('/offer', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                         body: JSON.stringify({ sdp: pc.localDescription.sdp }) });
+    const answer = await resp.json();
+    if (answer.error) throw new Error(answer.message || answer.error);
+    await pc.setRemoteDescription({ type: 'answer', sdp: answer.sdp });
+  } catch (e) {
+    disconnect(`Couldn't connect: ${e.message}`);
+    setStatus('error', 'bad');
+  }
+}
+
+$('connect').onclick = () => (pc ? disconnect() : connect());
+$('camera').onchange = () => send('livestreamCameraSwitch', { camera: $('camera').value });
+$('speed').oninput = () => { $('speedValue').textContent = parseFloat($('speed').value).toFixed(2); };
+
+const DRIVE_KEYS = ['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'];
+addEventListener('keydown', (e) => { const k = e.key.toLowerCase(); if (DRIVE_KEYS.includes(k)) { keys.add(k); e.preventDefault(); } });
+addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
+// stop if the page loses focus, so a stuck key can't keep it driving
+addEventListener('blur', () => keys.clear());
+document.addEventListener('visibilitychange', () => { if (document.hidden) keys.clear(); });
+addEventListener('beforeunload', () => disconnect());
+</script>
+</body>
+</html>
