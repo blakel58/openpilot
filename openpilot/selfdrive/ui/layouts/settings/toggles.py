@@ -35,6 +35,10 @@ DESCRIPTIONS = {
     "Record and upload video and logs from your comma body to comma connect to help improve the body. " +
     "Off by default: when off, the body records nothing and uploads nothing. Live teleop still works."
   ),
+  "BodyConnect": tr_noop(
+    "Let comma connect reach your comma body for remote teleop. " +
+    "Off by default: when off, the body does not connect to comma's servers. When on, comma's servers can start a live stream."
+  ),
 }
 
 
@@ -94,6 +98,12 @@ class TogglesLayout(Widget):
         "monitoring.png",
         True,
       ),
+      "BodyConnect": (
+        lambda: tr("comma connect Remote Control"),
+        DESCRIPTIONS["BodyConnect"],
+        "network.png",
+        True,
+      ),
       "IsMetric": (
         lambda: tr("Use Metric System"),
         DESCRIPTIONS["IsMetric"],
@@ -140,7 +150,7 @@ class TogglesLayout(Widget):
         self._locked_toggles.add(param)
 
       self._toggles[param] = toggle
-      if param == "BodyDataSharing":
+      if param in ("BodyDataSharing", "BodyConnect"):
         toggle.set_visible(lambda: bool(ui_state.is_body))
 
       # insert longitudinal personality after NDOG toggle

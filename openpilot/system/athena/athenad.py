@@ -46,7 +46,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.version import get_build_metadata
 from openpilot.common.hardware.hw import Paths
 from openpilot.system.athena.rpc import dispatcher, dumps_call, handle, is_call, is_response, loads
-from openpilot.system.body_privacy import body_privacy_active, ALLOWED_ATHENA_METHODS, ALLOWED_ATHENA_SERVICES
+from openpilot.system.body_privacy import body_privacy_active, connect_allowed, ALLOWED_ATHENA_METHODS, ALLOWED_ATHENA_SERVICES
 
 
 ATHENA_HOST = os.getenv('ATHENA_HOST', 'wss://athena.comma.ai')
@@ -1013,6 +1013,11 @@ def ws_manage(ws: WebSocket, end_event: threading.Event) -> None:
   sock = ws.sock
 
   while True:
+    if not connect_allowed(params):
+      # comma body with Connect turned off: hang up
+      end_event.set()
+      break
+
     onroad = not params.get_bool("IsOffroad")
     if onroad != onroad_prev:
       onroad_prev = onroad
@@ -1053,6 +1058,11 @@ def main(exit_event: threading.Event | None = None):
   conn_start = None
   conn_retries = 0
   while exit_event is None or not exit_event.is_set():
+    if not connect_allowed(params):
+      # comma body with Connect turned off: don't talk to comma's servers at all
+      time.sleep(5)
+      continue
+
     try:
       if conn_start is None:
         conn_start = time.monotonic()

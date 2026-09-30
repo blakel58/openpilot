@@ -20,6 +20,7 @@ from openpilot.common.params import Params
 from opendbc.car.structs import car
 
 BODY_DATA_SHARING_PARAM = "BodyDataSharing"
+BODY_CONNECT_PARAM = "BodyConnect"
 
 # athena RPC methods allowed while body privacy is active. Everything needed for
 # Connect pairing and live teleop; nothing that reads or moves stored data.
@@ -83,3 +84,11 @@ def is_body(params: Params, CP: car.CarParams | None = None) -> bool:
 def body_privacy_active(params: Params, CP: car.CarParams | None = None) -> bool:
   """True when on a body and the owner has not opted in to data sharing."""
   return is_body(params, CP) and not params.get_bool(BODY_DATA_SHARING_PARAM)
+
+
+def connect_allowed(params: Params) -> bool:
+  """athenad (comma connect) only talks to comma's servers from a body if the owner turned it on.
+
+  While connected, comma's servers can start a live stream, so it's off by default.
+  """
+  return not is_body(params) or params.get_bool(BODY_CONNECT_PARAM)

@@ -81,3 +81,13 @@ class TestBodyPrivacy(OpenpilotTestCase):
     item = athenad.UploadItem(path="", url="", headers={}, created_at=0, id="x", allow_cellular=True)
     with self.assertRaises(athenad.AbortTransferException):
       athenad.cb(None, item, 0, threading.Event(), 100, 50)
+
+  def test_connect_off_by_default_on_body(self):
+    self._drive(True)
+    assert not body_privacy.connect_allowed(self.params)
+    self.params.put_bool("BodyConnect", True, block=True)
+    assert body_privacy.connect_allowed(self.params)
+
+  def test_connect_unaffected_on_car(self):
+    self._drive(False)
+    assert body_privacy.connect_allowed(self.params)

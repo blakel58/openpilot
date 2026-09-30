@@ -70,6 +70,10 @@ class TogglesLayoutMici(NavScroller):
     #                                     description="Record and upload video and logs from your comma body.\n" +
     #                                                 "Off by default: nothing is recorded or uploaded. Live teleop still works.")
     # body_data_sharing.set_visible(lambda: bool(ui_state.is_body))
+    # body_connect = BigParamControl("comma connect remote control", "BodyConnect",
+    #                                description="Let comma connect reach your comma body for remote teleop.\n" +
+    #                                            "Off by default. When on, comma's servers can start a live stream.")
+    # body_connect.set_visible(lambda: bool(ui_state.is_body))
     enable_openpilot = BigParamControl("enable openpilot", "OpenpilotEnabledToggle", toggle_callback=restart_needed_callback,
                                        description="Enable to use openpilot driver assistance.\n" +
                                                    "Disable to use your car's stock driver assistance.")
@@ -83,6 +87,7 @@ class TogglesLayoutMici(NavScroller):
       record_front,
       record_mic,
       # body_data_sharing,
+      # body_connect,
       enable_openpilot,
     ])
 
@@ -95,6 +100,7 @@ class TogglesLayoutMici(NavScroller):
       ("RecordFront", record_front),
       ("RecordAudio", record_mic),
       # ("BodyDataSharing", body_data_sharing),
+      # ("BodyConnect", body_connect),
       ("OpenpilotEnabledToggle", enable_openpilot),
     )
 
