@@ -6,6 +6,7 @@ from opendbc.car.structs import car
 from openpilot.common.params import Params
 from openpilot.common.hardware import PC, COMMA_HARDWARE
 from openpilot.system.manager.process import PythonProcess, NativeProcess, DaemonProcess
+from openpilot.system.body_privacy import body_privacy_active
 
 WEBCAM = os.getenv("USE_WEBCAM") is not None
 
@@ -19,8 +20,16 @@ def iscar(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and not CP.notCar
 
 def logging(started: bool, params: Params, CP: car.CarParams) -> bool:
-  run = (not CP.notCar) or not params.get_bool("DisableLogging")
+  if CP.notCar:
+    # comma body: record only if the owner opted in to data sharing
+    run = not body_privacy_active(params, CP) and not params.get_bool("DisableLogging")
+  else:
+    run = True
   return started and run
+
+def uploads_allowed(started: bool, params: Params, CP: car.CarParams) -> bool:
+  # uses the persisted CarParams too, so a body stays private while offroad
+  return not body_privacy_active(params, CP)
 
 def ublox_available() -> bool:
   return os.path.exists('/dev/ttyHS0') and not os.path.exists('/persist/comma/use-quectel-gps')
@@ -112,7 +121,7 @@ procs = [
   PythonProcess("modem", "openpilot.common.hardware.comma.modem", always_run, enabled=COMMA_HARDWARE),
   PythonProcess("tombstoned", "openpilot.system.tombstoned", always_run, enabled=not PC),
   PythonProcess("updated", "openpilot.system.updated.updated", only_offroad, enabled=not PC),
-  PythonProcess("uploader", "openpilot.system.loggerd.uploader", always_run),
+  PythonProcess("uploader", "openpilot.system.loggerd.uploader", uploads_allowed),
 
   # debug procs
   NativeProcess("bridge", "openpilot/cereal/messaging", ["./bridge"], notcar),

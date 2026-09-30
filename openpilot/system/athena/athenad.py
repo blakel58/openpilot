@@ -46,6 +46,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.version import get_build_metadata
 from openpilot.common.hardware.hw import Paths
 from openpilot.system.athena.rpc import dispatcher, dumps_call, handle, is_call, is_response, loads
+from openpilot.system.body_privacy import body_privacy_active, ALLOWED_ATHENA_METHODS, ALLOWED_ATHENA_SERVICES
 
 
 ATHENA_HOST = os.getenv('ATHENA_HOST', 'wss://athena.comma.ai')
@@ -221,6 +222,10 @@ def jsonrpc_handler(end_event: threading.Event) -> None:
       msg = loads(data)
       if is_call(msg):
         cloudlog.event("athena.jsonrpc_handler.call_method", data=data)
+        if msg.get("method") not in ALLOWED_ATHENA_METHODS and body_privacy_active(Params()):
+          send_queue_push(json.dumps({"jsonrpc": "2.0", "id": msg.get("id"),
+                                      "error": {"code": -32601, "message": "disabled by body privacy"}}), SEND_PRIORITY_HIGH)
+          continue
         send_queue_push(handle(msg, dispatcher), SEND_PRIORITY_HIGH)
       elif is_response(msg):
         log_recv_queue.put_nowait(data)
@@ -278,6 +283,15 @@ def upload_handler(end_event: threading.Event) -> None:
     cur_upload_items[tid] = None
 
     try:
+      if body_privacy_active(Params()):
+        # drop anything queued; nothing leaves a private body
+        with suppress(queue.Empty):
+          while True:
+            upload_queue.get_nowait()
+        UploadQueueCache.cache(upload_queue)
+        end_event.wait(5)
+        continue
+
       cur_upload_items[tid] = item = replace(upload_queue.get(timeout=1), current=True)
 
       if item.id in cancelled_uploads:
@@ -355,6 +369,8 @@ def _do_upload(upload_item: UploadItem, callback: Callable | None = None) -> req
 def getMessage(service: str, timeout: int = 1000) -> dict:
   if service is None or service not in SERVICE_LIST:
     raise Exception("invalid service")
+  if service not in ALLOWED_ATHENA_SERVICES and body_privacy_active(Params()):
+    raise Exception("disabled by body privacy")
 
   socket = messaging.sub_sock(service, timeout=timeout)
   try:
@@ -842,6 +858,9 @@ def log_handler(end_event: threading.Event) -> None:
   log_files = []
   last_scan = 0.
   while not end_event.is_set():
+    if body_privacy_active(Params()):
+      end_event.wait(10)
+      continue
     try:
       curr_scan = time.monotonic()
       if curr_scan - last_scan > 10:

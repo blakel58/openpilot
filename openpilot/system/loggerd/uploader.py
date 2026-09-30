@@ -14,6 +14,7 @@ import openpilot.cereal.messaging as messaging
 from openpilot.common.api import Api
 from openpilot.common.utils import get_upload_stream
 from openpilot.common.params import Params
+from openpilot.system.body_privacy import body_privacy_active
 from openpilot.common.realtime import set_core_affinity
 from openpilot.common.hardware.hw import Paths
 from openpilot.system.loggerd.xattr_cache import getxattr, setxattr
@@ -249,6 +250,11 @@ def main(exit_event: threading.Event | None = None) -> None:
   while not exit_event.is_set():
     sm.update(0)
     offroad = params.get_bool("IsOffroad")
+    if body_privacy_active(params):
+      # comma body without data sharing opt-in: never upload
+      if allow_sleep:
+        time.sleep(10)
+      continue
     network_type = sm['deviceState'].networkType if not force_wifi else NetworkType.wifi
     if network_type == NetworkType.none:
       if allow_sleep:

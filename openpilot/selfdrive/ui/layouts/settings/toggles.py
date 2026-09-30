@@ -31,6 +31,10 @@ DESCRIPTIONS = {
   'RecordFront': tr_noop("Upload data from the cabin camera and help improve the driver monitoring algorithm."),
   "IsMetric": tr_noop("Display speed in km/h instead of mph."),
   "RecordAudio": tr_noop("Record and store microphone audio while driving. The audio will be included in the dashcam video in comma connect."),
+  "BodyDataSharing": tr_noop(
+    "Record and upload video and logs from your comma body to comma connect to help improve the body. " +
+    "Off by default: when off, the body records nothing and uploads nothing. Live teleop still works."
+  ),
 }
 
 
@@ -84,6 +88,12 @@ class TogglesLayout(Widget):
         "microphone.png",
         True,
       ),
+      "BodyDataSharing": (
+        lambda: tr("Share comma body Data"),
+        DESCRIPTIONS["BodyDataSharing"],
+        "monitoring.png",
+        True,
+      ),
       "IsMetric": (
         lambda: tr("Use Metric System"),
         DESCRIPTIONS["IsMetric"],
@@ -130,6 +140,8 @@ class TogglesLayout(Widget):
         self._locked_toggles.add(param)
 
       self._toggles[param] = toggle
+      if param == "BodyDataSharing":
+        toggle.set_visible(lambda: bool(ui_state.is_body))
 
       # insert longitudinal personality after NDOG toggle
       if param == "DisengageOnAccelerator":
