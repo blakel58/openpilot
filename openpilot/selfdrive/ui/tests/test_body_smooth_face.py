@@ -231,8 +231,13 @@ class TestChaseScene(unittest.TestCase):
       for i in range(round(CHASE_SECONDS / DT) + 1):
         shapes = chase_scene(aspect, i * DT)
         self.assertEqual(shapes[0][0], "stroke")  # the ground line
-        xs = [s[1] for s in shapes[1:] if s[0] in ("rrect", "circle")]
+        xs = [s[1] for s in shapes[1:] if s[0] in ("rrect", "circle")] + [s[3] for s in shapes if s[0] == "image"]
         on_screen.append(sum(0 <= x <= aspect for x in xs))
+        # the comma never sinks into the ground or stretches off the top
+        for s in shapes:
+          if s[0] == "image":
+            self.assertLessEqual(s[4] + s[6] / 2, 0.88 + 1e-6)
+            self.assertGreaterEqual(s[4] - s[6] / 2, 0.)
         # nothing is drawn below the ground
         for s in shapes[1:]:
           if s[0] == "circle":

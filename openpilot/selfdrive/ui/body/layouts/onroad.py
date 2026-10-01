@@ -277,6 +277,12 @@ class BodyLayout(Widget):
         font = gui_app.font(FontWeight.BOLD if bold else FontWeight.MEDIUM)
         size = measure_text_cached(font, string, int(height * u))
         rl.draw_text_ex(font, string, rl.Vector2(rect.x + cx * u - size.x / 2, rect.y + cy * u - size.y / 2), int(height * u), 0, rl.Color(*color))
+      elif kind == "image":
+        _, asset, box, cx, cy, w, h = shape
+        texture = gui_app.texture(asset, 512, 512)
+        source = rl.Rectangle(box[0] * texture.width, box[1] * texture.height, (box[2] - box[0]) * texture.width, (box[3] - box[1]) * texture.height)
+        dest = rl.Rectangle(rect.x + (cx - w / 2) * u, rect.y + (cy - h / 2) * u, w * u, h * u)
+        rl.draw_texture_pro(texture, source, dest, rl.Vector2(0, 0), 0., rl.WHITE)
       elif kind == "poly":
         _, points, color = shape
         a, b, c, d = (rl.Vector2(rect.x + x * u, rect.y + y * u) for x, y in points)
@@ -364,7 +370,10 @@ class BodyLayout(Widget):
     dots = self._animator.get_dots()
     animation = self._animator._animation
     if self._smooth_enabled and self._smooth_chase_start is not None and time.monotonic() < self._scene_until:
+      # the characters come in from off the side; keep them from being drawn over the sidebar
+      rl.begin_scissor_mode(int(rect.x), int(rect.y), int(rect.width), int(rect.height))
       self._draw_shapes(rect, chase_scene(rect.width / rect.height, time.monotonic() - self._smooth_chase_start))
+      rl.end_scissor_mode()
       return
     # the smooth face takes over, except while one of the tiny body's dot scenes is playing
     if self._smooth_enabled and animation not in OFFROAD_SCENES:

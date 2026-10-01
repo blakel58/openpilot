@@ -380,7 +380,7 @@ CHASE_SECONDS = 6.4
 GROUND_Y = 0.88
 _S = 1.5                 # overall size of the two characters
 _WHEEL_R = 0.042 * _S
-_COMMA_R = 0.047 * _S
+_COMMA_HEIGHT = 0.19 * _S
 
 
 def _ease(t: float) -> float:
@@ -404,47 +404,35 @@ def _body_x(t: float, aspect: float) -> float:
   return caught_up + (aspect + 0.8 - caught_up) * _ease((t - 3.9) / 2.3) ** 1.3
 
 
-def comma_shapes(cx: float, cy: float, r: float, squash: float = 0., wag: float = 0.) -> list[tuple]:
-  """A comma: a round head with one smooth tail that hooks down to the left and tapers to a point.
+# the comma is comma's own logo: the image, and where the comma sits inside it (left, top, right, bottom as fractions)
+COMMA_IMAGE = "images/spinner_comma.png"
+COMMA_IMAGE_BOX = (0.361, 0.261, 0.639, 0.763)
+COMMA_ASPECT = (COMMA_IMAGE_BOX[2] - COMMA_IMAGE_BOX[0]) / (COMMA_IMAGE_BOX[3] - COMMA_IMAGE_BOX[1])  # width / height
 
-  (cx, cy) is the middle of the head and r its radius. squash flattens it (landing from a hop),
-  wag swings the tip of the tail sideways.
+
+def comma_shapes(cx: float, bottom: float, height: float, squash: float = 0.) -> list[tuple]:
+  """The comma logo, standing on `bottom`, `height` tall. squash flattens it (landing from a hop).
+
+  Adds one more shape kind:
+    ("image", asset, (left, top, right, bottom of the part to draw, as fractions), center_x, center_y, width, height)
   """
-  shapes: list[tuple] = [("rrect", cx, cy, 2 * r * (1. + squash), 2 * r * (1. - squash), r * (1. - squash), WHITE)]
-  # the tail's center line is a curve from inside the head, out to the right, then hooking down-left
-  start = (0.30 * r, 0.25 * r)
-  bend = (1.05 * r, 1.55 * r * (1. - squash))
-  tip = ((-0.75 + wag) * r, 2.35 * r * (1. - squash))
-  steps = 10
-  rows = []
-  for i in range(steps + 1):
-    u = i / steps
-    x = (1 - u) ** 2 * start[0] + 2 * u * (1 - u) * bend[0] + u ** 2 * tip[0]
-    y = (1 - u) ** 2 * start[1] + 2 * u * (1 - u) * bend[1] + u ** 2 * tip[1]
-    # direction along the curve, to find the two edges on either side of it
-    dx = 2 * (1 - u) * (bend[0] - start[0]) + 2 * u * (tip[0] - bend[0])
-    dy = 2 * (1 - u) * (bend[1] - start[1]) + 2 * u * (tip[1] - bend[1])
-    norm = math.hypot(dx, dy) or 1.
-    half = 0.62 * r * (1 - u) ** 1.25 + 0.02 * r
-    rows.append(((cx + x - dy / norm * half, cy + y + dx / norm * half), (cx + x + dy / norm * half, cy + y - dx / norm * half)))
-  for (a0, b0), (a1, b1) in zip(rows, rows[1:], strict=False):
-    shapes.append(("poly", [a0, b0, b1, a1], WHITE))
-  return shapes
+  h = height * (1. - squash)
+  w = height * COMMA_ASPECT * (1. + squash)
+  return [("image", COMMA_IMAGE, COMMA_IMAGE_BOX, cx, bottom - h / 2, w, h)]
 
 
 def chase_scene(aspect: float, t: float) -> list[tuple]:
   """The shapes for the chase, t seconds in."""
   shapes: list[tuple] = [("stroke", [(0.06, GROUND_Y + 0.012), (aspect - 0.06, GROUND_Y + 0.012)], 0.006, (255, 255, 255, 45))]
 
-  # the comma: a round head with a tail of shrinking dots, hopping; it squashes as it lands
+  # the comma hops along; it squashes as it lands
   cx = _comma_x(t, aspect)
   resting = 2.6 <= t < 3.5
   dashing = t >= 3.5
   hops = cx / (0.46 if dashing else 0.32)
   height = 0. if resting else abs(math.sin(math.pi * hops)) * (0.26 if dashing else 0.17)
   squash = 0.22 * max(0., 1. - height / 0.05) if not resting else 0.05 * math.sin(t * 9)
-  cy = GROUND_Y - 2.37 * _COMMA_R * (1. - squash) - height
-  shapes += comma_shapes(cx, cy, _COMMA_R, squash, wag=0.25 * math.sin(t * 12) if not resting else 0.)
+  shapes += comma_shapes(cx, GROUND_Y - height, _COMMA_HEIGHT, squash)
 
   # the tiny body: wheels that turn, a neck, and a head with two eyes fixed on the comma
   bx = _body_x(t, aspect)
