@@ -95,7 +95,7 @@ class Body:
       else:
         return {"error": "body not reachable: is it on, and is SSH working?"}
 
-    body = StreamRequestBody(sdp, [CAMERAS[0]], True, ["testJoystick"], ["carState", "deviceState"])
+    body = StreamRequestBody(sdp, [CAMERAS[0]], True, ["testJoystick"], ["carState", "carOutput", "deviceState"])
     req = urllib.request.Request(f"{self.webrtcd_url}/stream", data=json.dumps(dataclasses.asdict(body)).encode(),
                                  headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=30) as resp:

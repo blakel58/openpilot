@@ -47,6 +47,7 @@
         <option value="wideRoad">rear wide</option>
         <option value="road">rear</option>
       </select>
+      <button id="savelog" title="Save commanded vs. measured speed and motor torque from this session as a CSV, for tuning">Save drive log</button>
       <button id="connect" class="primary">Connect</button>
     </div>
   </header>
@@ -81,6 +82,10 @@ let pc = null, dc = null, sendTimer = null, statsTimer = null;
 let command = [0, 0];  // [throttle (negative = forward), turn (positive = left)]
 let smoothed = [0, 0];
 const TICK = 0.05;  // seconds between commands
+// tuning log, kept in this page's memory only (last ~10 minutes) until you save it
+const LOG_MAX = 12000;
+let driveLog = [];
+let latest = { speedL: 0, speedR: 0, vEgo: 0, torqueL: 0, torqueR: 0 };
 const keys = new Set();
 
 function setStatus(text, cls = '') { $('status').textContent = text; $('status').className = 'value ' + cls; }
@@ -172,7 +177,13 @@ async function connect() {
   dc.onopen = () => {
     send('livestreamVideoEnable', { enabled: true });
     if ($('camera').value !== 'driver') send('livestreamCameraSwitch', { camera: $('camera').value });
-    sendTimer = setInterval(() => { updateCommand(); send('testJoystick', { axes: command, buttons: [false] }); }, 50);
+    sendTimer = setInterval(() => {
+      updateCommand();
+      send('testJoystick', { axes: command, buttons: [false] });
+      driveLog.push([(performance.now() / 1000).toFixed(3), command[0].toFixed(3), command[1].toFixed(3),
+                     latest.speedL, latest.speedR, latest.vEgo, latest.torqueL, latest.torqueR]);
+      if (driveLog.length > LOG_MAX) driveLog.shift();
+    }, 50);
     statsTimer = setInterval(updateStats, 1000);
   };
   dc.onmessage = (evt) => {
@@ -181,6 +192,10 @@ async function connect() {
       if (msg.type === 'carState') {
         const level = Math.round((msg.data.fuelGauge || 0) * 100);
         $('battery').textContent = `${level}%${msg.data.charging ? ' (charging)' : ''}`;
+        latest.speedL = msg.data.wheelSpeeds?.fl ?? 0; latest.speedR = msg.data.wheelSpeeds?.fr ?? 0; latest.vEgo = msg.data.vEgo ?? 0;
+      } else if (msg.type === 'carOutput') {
+        // the body's controller reports left/right motor torque in these fields
+        latest.torqueL = msg.data.actuatorsOutput?.accel ?? 0; latest.torqueR = msg.data.actuatorsOutput?.torque ?? 0;
       } else if (msg.type === 'disconnect') {
         disconnect(msg.data || 'Disconnected by the body');
       }
@@ -206,6 +221,13 @@ async function connect() {
 }
 
 $('connect').onclick = () => (pc ? disconnect() : connect());
+$('savelog').onclick = () => {
+  const csv = 'time_s,cmd_throttle,cmd_turn,wheel_rpm_l,wheel_rpm_r,v_ego,torque_l,torque_r\n' + driveLog.map((r) => r.join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.download = `body-drive-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+  a.click();
+};
 $('camera').onchange = () => send('livestreamCameraSwitch', { camera: $('camera').value });
 $('speed').oninput = () => { $('speedValue').textContent = parseFloat($('speed').value).toFixed(2); };
 $('ramp').oninput = () => { $('rampValue').textContent = parseFloat($('ramp').value).toFixed(2) + 's'; };
