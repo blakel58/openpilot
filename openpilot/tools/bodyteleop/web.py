@@ -2,7 +2,7 @@
 """
 Local teleop for the comma body, without comma connect.
 
-Runs on your computer and serves a control page at http://localhost:5000.
+Runs on your computer and serves a control page at http://localhost:5005.
 The browser talks WebRTC directly to the body over your network; the only
 thing sent through this server is the connection offer, which goes to the
 body's webrtcd over an SSH tunnel (so it's authenticated with your SSH key).
@@ -146,7 +146,7 @@ def main():
   parser.add_argument("--user", default="comma", help="SSH user on the body")
   parser.add_argument("--webrtcd", help="webrtcd URL to use directly instead of an SSH tunnel, e.g. when running on the body")
   parser.add_argument("--host", default="127.0.0.1", help="address to serve the control page on (default: this computer only)")
-  parser.add_argument("--port", type=int, default=5000)
+  parser.add_argument("--port", type=int, default=5005, help="port for the control page (5000 is taken by AirPlay on macOS)")
   args = parser.parse_args()
   if args.body is None and args.webrtcd is None:
     parser.error("pass --body <ip> (or --webrtcd <url>)")
