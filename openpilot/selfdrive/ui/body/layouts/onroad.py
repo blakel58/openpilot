@@ -141,6 +141,8 @@ class BodyLayout(Widget):
     super()._handle_mouse_event(mouse_event)
     # remember where a finger is, so the smooth face can look at it
     self._touch = (mouse_event.pos.x, mouse_event.pos.y) if mouse_event.left_down else None
+    if mouse_event.left_down:
+      companion.touched()   # so a companion computer driving the body can hold it still while it's being used
 
   def _update_state(self):
     super()._update_state()

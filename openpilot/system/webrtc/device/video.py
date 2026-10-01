@@ -46,6 +46,7 @@ class LiveStreamVideoStreamTrack(TiciVideoStreamTrack):
     self.timing_sei_enabled = False
     self.params = Params()
     self._seen_keyframe = False
+    self._switching = False
     self.video_enabled = video_enabled
 
   def stop(self) -> None:
@@ -57,6 +58,10 @@ class LiveStreamVideoStreamTrack(TiciVideoStreamTrack):
 
   def switch_camera(self, camera_type: str) -> None:
     self._sock = self._make_sock(camera_type)
+    # the other camera's stream can only be decoded from a keyframe on
+    self._seen_keyframe = False
+    self._switching = True
+    self.request_keyframe()
 
   def enable(self, enabled: bool):
     self.video_enabled = enabled
@@ -89,7 +94,11 @@ class LiveStreamVideoStreamTrack(TiciVideoStreamTrack):
 
       msg = messaging.recv_one_or_none(self._sock)
       if msg is not None:
-        if not self._seen_keyframe and (getattr(msg, msg.which()).idx.flags & V4L2_BUF_FLAG_KEYFRAME):
+        keyframe = getattr(msg, msg.which()).idx.flags & V4L2_BUF_FLAG_KEYFRAME
+        if self._switching and not keyframe:
+          continue  # after a camera switch nothing can be decoded until the new stream's first keyframe
+        self._switching = False
+        if not self._seen_keyframe and keyframe:
           self._seen_keyframe = True
           self.params.put("LivestreamRequestKeyframe", False, block=False)
         break
