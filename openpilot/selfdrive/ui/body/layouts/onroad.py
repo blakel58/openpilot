@@ -5,7 +5,7 @@ from openpilot.system.ui.lib.application import gui_app, FontWeight, TextAlignme
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.selfdrive.ui.ui_state import ui_state
-from openpilot.selfdrive.ui.body.animations import FaceAnimator, ASLEEP, INQUISITIVE, NORMAL, SLEEPY
+from openpilot.selfdrive.ui.body.animations import FaceAnimator, ASLEEP, CONTENT, INQUISITIVE, LIVE_DOT, NORMAL, SLEEPY, TIRED, WINK
 
 GRID_COLS = 16
 GRID_ROWS = 8
@@ -14,6 +14,9 @@ DOT_RADIUS = 50 if gui_app.big_ui() else 10
 IDLE_TIMEOUT = 30.0        # seconds of no joystick input before playing INQUISITIVE
 IDLE_STEER_THRESH = 0.5    # degrees — below this counts as no input
 IDLE_SPEED_THRESH = 0.01   # m/s — below this counts as no input
+LOW_BATTERY = 0.15         # fuelGauge below this looks tired
+TELEOP_TIMEOUT = 1.0       # seconds since the last joystick message before teleop counts as disconnected
+WINK_DURATION = 1.5        # seconds the wink plays when someone connects
 
 
 # This class is used both in BIG (tizi) and small (mici) UIs
@@ -25,6 +28,8 @@ class BodyLayout(Widget):
     self._turning_right = False
     self._last_input_time = time.monotonic()
     self._was_active = False
+    self._teleop_connected = False
+    self._wink_until = 0.
     self._offroad_label = UnifiedLabel("turn on ignition to use", 95 if gui_app.big_ui() else 45, FontWeight.DISPLAY,
                                        alignment=TextAlignment.CENTER,
                                        alignment_vertical=TextAlignmentVertical.MIDDLE)
@@ -58,13 +63,27 @@ class BodyLayout(Widget):
       if has_input:
         self._last_input_time = time.monotonic()
 
-      if time.monotonic() - self._last_input_time > IDLE_TIMEOUT:
+      if time.monotonic() < self._wink_until:
+        self._animator.set_animation(WINK)
+      elif has_input:
+        self._animator.set_animation(NORMAL)
+      elif cs.charging:
+        self._animator.set_animation(CONTENT)
+      elif sm.recv_frame['carState'] > 0 and cs.fuelGauge < LOW_BATTERY:
+        self._animator.set_animation(TIRED)
+      elif time.monotonic() - self._last_input_time > IDLE_TIMEOUT:
         self._animator.set_animation(INQUISITIVE)
       else:
         self._animator.set_animation(NORMAL)
     else:
       self._was_active = False
       self._animator.set_animation(ASLEEP)
+
+    # someone is connected and driving (comma connect or local teleop both send testJoystick)
+    teleop_connected = sm.recv_frame['testJoystick'] > 0 and (time.monotonic() - sm.recv_time['testJoystick']) < TELEOP_TIMEOUT
+    if teleop_connected and not self._teleop_connected and ui_state.is_onroad():
+      self._wink_until = time.monotonic() + WINK_DURATION
+    self._teleop_connected = teleop_connected
 
     steer = sm['testJoystick'].axes[1] if len(sm['testJoystick'].axes) > 1 else 0
     self._turning_left = steer >= 0.05
@@ -86,6 +105,10 @@ class BodyLayout(Widget):
       remove_set = set(animation.right_turn_remove)
       dots = [d for d in dots if d not in remove_set]
     self.draw_dot_grid(rect, dots, rl.WHITE)
+
+    # pulsing red dot while someone is connected and driving
+    if self._teleop_connected and time.monotonic() % 1.0 < 0.7:
+      self.draw_dot_grid(rect, [LIVE_DOT], rl.Color(255, 60, 50, 255))
 
     if ui_state.is_offroad():
       rl.draw_rectangle(int(self.rect.x), int(self.rect.y), int(self.rect.width), int(self.rect.height), rl.Color(0, 0, 0, 175))

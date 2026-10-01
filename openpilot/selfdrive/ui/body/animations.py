@@ -159,6 +159,44 @@ INQUISITIVE = Animation(
   repeat_interval=10
 )
 
+# low battery: heavy eyelids and a long, slow blink
+TIRED = Animation(
+  frames=[
+    _make_frame(EYE_HALF, _mirror(EYE_HALF), BROW_LOWERED, _mirror(BROW_LOWERED), MOUTH_NORMAL),
+    _make_frame(EYE_CLOSED, _mirror(EYE_CLOSED), _shift(BROW_STRAIGHT, (1, 0)), _mirror(_shift(BROW_STRAIGHT, (1, 0))), MOUTH_NORMAL),
+  ],
+  frame_duration=0.4,
+  repeat_interval=4,
+  hold_end=0.8,
+)
+
+# charging: eyes closed and smiling, with the occasional peek
+CONTENT = Animation(
+  frames=[
+    _make_frame(EYE_CLOSED, _mirror(EYE_CLOSED), BROW_HIGH, _mirror(BROW_HIGH), MOUTH_SMILE),
+    _make_frame(EYE_HALF, _mirror(EYE_HALF), BROW_HIGH, _mirror(BROW_HIGH), MOUTH_SMILE),
+    _make_frame(EYE_OPEN, _mirror(EYE_OPEN), BROW_HIGH, _mirror(BROW_HIGH), MOUTH_SMILE),
+  ],
+  frame_duration=0.2,
+  repeat_interval=8,
+  hold_end=0.8,
+)
+
+# someone just connected to drive: a quick wink
+WINK = Animation(
+  frames=[
+    _make_frame(EYE_OPEN, _mirror(EYE_OPEN), BROW_HIGH, _mirror(BROW_HIGH), MOUTH_SMILE),
+    _make_frame(EYE_OPEN, _mirror(EYE_HALF), BROW_HIGH, _mirror(BROW_LOWERED), MOUTH_SMILE),
+    _make_frame(EYE_OPEN, _mirror(EYE_CLOSED), BROW_HIGH, _mirror(BROW_LOWERED), MOUTH_SMILE),
+  ],
+  frame_duration=0.12,
+  mode=AnimationMode.ONCE_FORWARD_BACKWARD,
+  hold_end=0.5,
+)
+
+# shown (in red) while someone is connected and driving; a corner no face uses
+LIVE_DOT = (7, 15)
+
 # --- Face Animator Class ---
 
 class FaceAnimator:
