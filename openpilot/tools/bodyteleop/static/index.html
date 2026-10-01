@@ -67,6 +67,9 @@
     <label for="speed">speed</label>
     <input id="speed" type="range" min="0.1" max="1" step="0.05" value="0.4">
     <span id="speedValue">0.40</span>
+    <label for="ramp">smoothing</label>
+    <input id="ramp" type="range" min="0" max="1.5" step="0.05" value="0.6">
+    <span id="rampValue">0.60s</span>
     <span class="help">Drive with <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrow keys, or a gamepad (left stick steers, triggers drive).
       Releasing all keys stops the body; it also stops on its own if commands stop arriving.</span>
   </div>
@@ -76,6 +79,8 @@
 const $ = (id) => document.getElementById(id);
 let pc = null, dc = null, sendTimer = null, statsTimer = null;
 let command = [0, 0];  // [throttle (negative = forward), turn (positive = left)]
+let smoothed = [0, 0];
+const TICK = 0.05;  // seconds between commands
 const keys = new Set();
 
 function setStatus(text, cls = '') { $('status').textContent = text; $('status').className = 'value ' + cls; }
@@ -97,8 +102,19 @@ function updateCommand() {
     throttle = (lt - rt) * speed;
     turn = -lx * speed;
   }
+  // ramp toward the target instead of jumping to it (a trapezoid instead of a box), so the body
+  // doesn't lurch. slowing down ramps twice as fast, and never takes longer than 0.3s to stop
+  const ramp = parseFloat($('ramp').value);
+  const up = ramp > 0 ? TICK / ramp : Infinity;
+  const down = ramp > 0 ? TICK / Math.min(ramp / 2, 0.3) : Infinity;
+  smoothed = [throttle, turn].map((target, i) => {
+    const cur = smoothed[i];
+    const slowing = Math.abs(target) < Math.abs(cur) || (cur !== 0 && Math.sign(target) !== Math.sign(cur));
+    const step = slowing ? down : up;
+    return Math.abs(target - cur) <= step ? target : cur + Math.sign(target - cur) * step;
+  });
   // looking out a rear camera, drive the way the picture faces
-  command = [isRear() ? -throttle : throttle, turn];
+  command = [isRear() ? -smoothed[0] : smoothed[0], smoothed[1]];
   $('command').textContent = `${command[0].toFixed(2)}, ${command[1].toFixed(2)}`;
 }
 
@@ -123,6 +139,7 @@ function disconnect(reason = 'Not connected') {
   if (dc) { try { send('testJoystick', { axes: [0, 0], buttons: [false] }); } catch (e) {} }
   if (pc) pc.close();
   pc = dc = null;
+  smoothed = [0, 0];
   $('video').srcObject = null;
   $('overlay').textContent = reason; $('overlay').hidden = false;
   $('path').textContent = '–'; $('path').className = 'value';
@@ -191,6 +208,7 @@ async function connect() {
 $('connect').onclick = () => (pc ? disconnect() : connect());
 $('camera').onchange = () => send('livestreamCameraSwitch', { camera: $('camera').value });
 $('speed').oninput = () => { $('speedValue').textContent = parseFloat($('speed').value).toFixed(2); };
+$('ramp').oninput = () => { $('rampValue').textContent = parseFloat($('ramp').value).toFixed(2) + 's'; };
 
 const DRIVE_KEYS = ['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'];
 addEventListener('keydown', (e) => { const k = e.key.toLowerCase(); if (DRIVE_KEYS.includes(k)) { keys.add(k); e.preventDefault(); } });
