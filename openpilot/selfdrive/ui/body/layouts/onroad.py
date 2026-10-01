@@ -75,7 +75,7 @@ class BodyLayout(Widget):
     self._smooth_time = time.monotonic()
     self._touch: tuple[float, float] | None = None
     # commands for the smooth face from anything else on the device (see face_command.py)
-    self._face_sock = messaging.sub_sock(face_command.SERVICE, conflate=True, timeout=0)
+    self._face_sock = messaging.sub_sock(face_command.SERVICE, timeout=0)
     self._face_cmd: face_command.FaceCommand | None = None
     self._face_cmd_until = 0.
     self._status_text = ""
@@ -153,8 +153,8 @@ class BodyLayout(Widget):
       self._smooth_enabled = ui_state.params.get_bool(SMOOTH_FACE_PARAM)
       self._smooth_checked = time.monotonic()
 
-    msg = messaging.recv_one_or_none(self._face_sock)
-    if msg is not None:
+    # every message, in order: a status word and a face command often arrive together
+    for msg in messaging.drain_sock(self._face_sock):
       data = bytes(msg.customReservedRawData0)
       cmd = face_command.parse(data)
       if cmd is not None:
