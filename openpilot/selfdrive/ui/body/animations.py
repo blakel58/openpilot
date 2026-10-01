@@ -229,6 +229,11 @@ _COMMA = [
         (2, 1),
 (3, 0),
 ]
+# sprites are drawn smaller than the face: dots and spacing both scaled down
+_SPRITE_SCALE = 0.7
+_BODY = [(r * _SPRITE_SCALE, c * _SPRITE_SCALE, _SPRITE_SCALE) for r, c in _BODY]
+_COMMA = [(r * _SPRITE_SCALE, c * _SPRITE_SCALE, _SPRITE_SCALE) for r, c in _COMMA]
+_BODY_ROW = (GRID_ROWS - 1) - 4 * _SPRITE_SCALE  # wheels on the bottom row
 
 # sprites move a quarter of a dot at a time so they glide instead of stepping
 _GLIDE_STEP = 0.25
@@ -279,12 +284,13 @@ PEEK = Animation(
 )
 
 # the tiny body rolls across the screen
-ROLL = Animation(frames=[_place(_BODY, (3, c)) for c in _glide(-3, GRID_COLS)], frame_duration=_GLIDE_FRAME, mode=AnimationMode.ONCE_FORWARD)
+ROLL = Animation(frames=[_place(_BODY, (_BODY_ROW, c)) for c in _glide(-3, GRID_COLS)], frame_duration=_GLIDE_FRAME, mode=AnimationMode.ONCE_FORWARD)
 ROLL_BACK = Animation(frames=ROLL.frames[::-1], frame_duration=_GLIDE_FRAME, mode=AnimationMode.ONCE_FORWARD)
 
 # a comma hops across in arcs, one hop every two dots, with the tiny body rolling after it
 CHASE = Animation(
-  frames=[_place(_COMMA, (3 - abs(math.sin(math.pi * c / 2)), c + 6)) + _place(_BODY, (3, c)) for c in _glide(-9, GRID_COLS)],
+  frames=[_place(_COMMA, (_BODY_ROW + _SPRITE_SCALE * (1 - abs(math.sin(math.pi * c / 2))), c + 6)) + _place(_BODY, (_BODY_ROW, c))
+          for c in _glide(-9, GRID_COLS)],
   frame_duration=_GLIDE_FRAME,
   mode=AnimationMode.ONCE_FORWARD,
 )
