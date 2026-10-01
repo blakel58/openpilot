@@ -215,29 +215,20 @@ MOUTH_OPEN = [
         (7, 7), (7, 8),
 ]
 
-# sprites are drawn finer than the face: small dots on a half-dot grid, big dots for wheels
-_FINE = 0.42
-
-# a tiny comma body: an outlined screen with two eyes, a neck, and its two wheels
-_BODY = (
-  [(0., c / 2, _FINE) for c in range(7)] + [(1.5, c / 2, _FINE) for c in range(7)] +   # screen top and bottom
-  [(0.5, 0., _FINE), (1., 0., _FINE), (0.5, 3., _FINE), (1., 3., _FINE)] +             # screen sides
-  [(0.75, 1., 0.6), (0.75, 2., 0.6)] +                                                 # eyes
-  [(2., 1.5, _FINE), (2.5, 1.5, _FINE), (3., 1.5, _FINE)] +                            # neck
-  [(3.9, 0.5, 1.05), (3.9, 2.5, 1.05), (3.9, 1.5, _FINE)]                              # wheels and axle
-)
-# a comma: a big dot with a tail that tapers away
-_COMMA = [(0., 0.5, 1.25), (0.95, 0.7, 0.8), (1.6, 0.45, 0.55), (2.05, 0.1, 0.35)]
-
-
-def _scaled(dots: list[tuple], k: float) -> list[tuple]:
-  return [(d[0] * k, d[1] * k, d[2] * k) for d in dots]
-
-
-_BODY = _scaled(_BODY, 1.35)
-_COMMA = _scaled(_COMMA, 1.35)
-_BODY_ROW = 7 - 3.9 * 1.35  # wheels sit on the bottom row
-_Z = [(0., 0.), (0., 0.5), (0., 1.), (0.5, 0.5), (1., 0.), (1., 0.5), (1., 1.)]
+# a tiny comma body: head, pole and its two wheels
+_BODY = [
+(0, 0), (0, 1), (0, 2),
+(1, 0), (1, 1), (1, 2),
+        (2, 1),
+        (3, 1),
+(4, 0),         (4, 2),
+]
+_COMMA = [
+(0, 0), (0, 1),
+(1, 0), (1, 1),
+        (2, 1),
+(3, 0),
+]
 
 # sprites move a quarter of a dot at a time so they glide instead of stepping
 _GLIDE_STEP = 0.25
@@ -257,26 +248,15 @@ def _glide(start: float, end: float) -> list[float]:
 
 _SLEEP_FACE = _make_frame(EYE_CLOSED, _mirror(EYE_CLOSED), [], [], MOUTH_NORMAL)
 
-# slow breathing: the face swells a little on each breath, and a z grows as it floats away
+# slow breathing: the sleeping face swells a little on each breath
 _BREATH_PERIOD = 4.0  # seconds per breath
-_SNORE_FRAME = 0.05
-
-
-def _snore_frame(t: float) -> list[tuple]:
-  phase = (t % _BREATH_PERIOD) / _BREATH_PERIOD
-  frame = _sized(_SLEEP_FACE, 1. + 0.12 * math.sin(math.pi * phase) ** 2)
-  # (dot size, row, col): it rises through the gap between the eyes during the out-breath
-  # one z at a time, so they read as a single z growing as it rises
-  for i, (size, row, col) in enumerate(((0.25, 5.2, 8.6), (0.34, 3.5, 8.7), (0.44, 1.4, 8.6))):
-    appear = 0.4 + i * 0.16
-    if appear <= phase < appear + 0.16:
-      frame += _sized(_shift([(r * 3.8 * size, c * 3.8 * size) for r, c in _Z], (row, col)), size)
-  return frame
-
-
+_BREATH_FRAME = 0.05
+_BREATH_STEPS = round(2 * _BREATH_PERIOD / _BREATH_FRAME)  # two breaths
 SNORE = Animation(
-  frames=[_SLEEP_FACE] + [_snore_frame(i * _SNORE_FRAME) for i in range(round(2 * _BREATH_PERIOD / _SNORE_FRAME))] + [_SLEEP_FACE],
-  frame_duration=_SNORE_FRAME,
+  frames=[_SLEEP_FACE] +
+         [_sized(_SLEEP_FACE, 1. + 0.14 * math.sin(math.pi * i * _BREATH_FRAME / _BREATH_PERIOD) ** 2) for i in range(_BREATH_STEPS)] +
+         [_SLEEP_FACE],
+  frame_duration=_BREATH_FRAME,
   mode=AnimationMode.ONCE_FORWARD,
 )
 
@@ -299,12 +279,12 @@ PEEK = Animation(
 )
 
 # the tiny body rolls across the screen
-ROLL = Animation(frames=[_place(_BODY, (_BODY_ROW, c)) for c in _glide(-4.5, GRID_COLS)], frame_duration=_GLIDE_FRAME, mode=AnimationMode.ONCE_FORWARD)
+ROLL = Animation(frames=[_place(_BODY, (3, c)) for c in _glide(-3, GRID_COLS)], frame_duration=_GLIDE_FRAME, mode=AnimationMode.ONCE_FORWARD)
 ROLL_BACK = Animation(frames=ROLL.frames[::-1], frame_duration=_GLIDE_FRAME, mode=AnimationMode.ONCE_FORWARD)
 
-# a comma hops across in arcs, one hop every three dots, with the tiny body rolling after it
+# a comma hops across in arcs, one hop every two dots, with the tiny body rolling after it
 CHASE = Animation(
-  frames=[_place(_COMMA, (4.0 - 1.8 * abs(math.sin(math.pi * c / 3)), c + 7.5)) + _place(_BODY, (_BODY_ROW, c)) for c in _glide(-11.5, GRID_COLS)],
+  frames=[_place(_COMMA, (3 - abs(math.sin(math.pi * c / 2)), c + 6)) + _place(_BODY, (3, c)) for c in _glide(-9, GRID_COLS)],
   frame_duration=_GLIDE_FRAME,
   mode=AnimationMode.ONCE_FORWARD,
 )
