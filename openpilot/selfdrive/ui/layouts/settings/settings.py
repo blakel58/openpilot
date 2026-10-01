@@ -2,11 +2,13 @@ import pyray as rl
 from dataclasses import dataclass, field
 from enum import IntEnum
 from collections.abc import Callable
+from openpilot.selfdrive.ui.layouts.settings.body import BodyLayout
 from openpilot.selfdrive.ui.layouts.settings.developer import DeveloperLayout
 from openpilot.selfdrive.ui.layouts.settings.device import DeviceLayout
 from openpilot.selfdrive.ui.layouts.settings.firehose import FirehoseLayout
 from openpilot.selfdrive.ui.layouts.settings.software import SoftwareLayout
 from openpilot.selfdrive.ui.layouts.settings.toggles import TogglesLayout
+from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app, FontWeight, MousePos
 from openpilot.system.ui.lib.multilang import tr, tr_noop
 from openpilot.system.ui.lib.text_measure import measure_text_cached
@@ -37,6 +39,7 @@ class PanelType(IntEnum):
   SOFTWARE = 3
   FIREHOSE = 4
   DEVELOPER = 5
+  BODY = 6
 
 
 @dataclass
@@ -62,6 +65,7 @@ class SettingsLayout(Widget):
       PanelType.SOFTWARE: PanelInfo(tr_noop("Software"), SoftwareLayout()),
       PanelType.FIREHOSE: PanelInfo(tr_noop("Firehose"), FirehoseLayout()),
       PanelType.DEVELOPER: PanelInfo(tr_noop("Developer"), DeveloperLayout()),
+      PanelType.BODY: PanelInfo(tr_noop("Body"), BodyLayout()),
     }
 
     self._font_medium = gui_app.font(FontWeight.MEDIUM)
@@ -117,6 +121,9 @@ class SettingsLayout(Widget):
     # Navigation buttons
     y = rect.y + 300
     for panel_type, panel_info in self._panels.items():
+      if panel_type == PanelType.BODY and not ui_state.is_body:
+        panel_info.button_rect = rl.Rectangle(0, 0, 0, 0)  # only on a comma body
+        continue
       button_rect = rl.Rectangle(rect.x + 50, y, rect.width - 150, NAV_BTN_HEIGHT)
 
       # Button styling

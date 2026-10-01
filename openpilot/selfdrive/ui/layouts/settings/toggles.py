@@ -31,22 +31,6 @@ DESCRIPTIONS = {
   'RecordFront': tr_noop("Upload data from the cabin camera and help improve the driver monitoring algorithm."),
   "IsMetric": tr_noop("Display speed in km/h instead of mph."),
   "RecordAudio": tr_noop("Record and store microphone audio while driving. The audio will be included in the dashcam video in comma connect."),
-  "BodyDataSharing": tr_noop(
-    "Record and upload video and logs from your comma body to comma connect to help improve the body. " +
-    "Off by default: when off, the body records nothing and uploads nothing. Live teleop still works."
-  ),
-  "BodySmoothFace": tr_noop(
-    "Try the new face: smooth eyes that follow your touch and whoever is in front of the body. " +
-    "Turn off to go back to the dot face."
-  ),
-  "BodyListening": tr_noop(
-    "Turn on the comma body's microphone while it is in drive mode, so it can hear you and a computer on your network can listen through it. " +
-    "Off by default. A blue dot on the face shows whenever the microphone is live. Nothing is recorded."
-  ),
-  "BodyConnect": tr_noop(
-    "Let comma connect reach your comma body for remote teleop. " +
-    "Off by default: when off, the body does not connect to comma's servers. When on, comma's servers can start a live stream."
-  ),
 }
 
 
@@ -100,30 +84,6 @@ class TogglesLayout(Widget):
         "microphone.png",
         True,
       ),
-      "BodyDataSharing": (
-        lambda: tr("Share comma body Data"),
-        DESCRIPTIONS["BodyDataSharing"],
-        "monitoring.png",
-        True,
-      ),
-      "BodySmoothFace": (
-        lambda: tr("New Face (beta)"),
-        DESCRIPTIONS["BodySmoothFace"],
-        "monitoring.png",
-        False,
-      ),
-      "BodyListening": (
-        lambda: tr("Listening"),
-        DESCRIPTIONS["BodyListening"],
-        "microphone.png",
-        False,
-      ),
-      "BodyConnect": (
-        lambda: tr("comma connect Remote Control"),
-        DESCRIPTIONS["BodyConnect"],
-        "network.png",
-        True,
-      ),
       "IsMetric": (
         lambda: tr("Use Metric System"),
         DESCRIPTIONS["IsMetric"],
@@ -170,8 +130,6 @@ class TogglesLayout(Widget):
         self._locked_toggles.add(param)
 
       self._toggles[param] = toggle
-      if param in ("BodyDataSharing", "BodyConnect", "BodySmoothFace", "BodyListening"):
-        toggle.set_visible(lambda: bool(ui_state.is_body))
 
       # insert longitudinal personality after NDOG toggle
       if param == "DisengageOnAccelerator":

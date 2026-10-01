@@ -14,6 +14,7 @@ from openpilot.selfdrive.ui.body.animations import FaceAnimator, ASLEEP, CONTENT
                                                      OFFROAD_SCENES, SLEEPY, SMOOTH_FACE_SCENES, SURPRISED, TIRED, WINK, YAWN, battery_meter, \
                                                      duration, meter_color
 from openpilot.selfdrive.ui.body import face_command
+from openpilot.selfdrive.ui.body.companion import companion
 from openpilot.selfdrive.ui.body.smooth_face import CHASE_SECONDS, ChargeEstimator, SmoothFace, asleep_hint, charge_panel, charge_strip, \
                                                     chase_scene, format_eta_short
 
@@ -144,6 +145,7 @@ class BodyLayout(Widget):
 
     sm = ui_state.sm
     self._update_battery(sm)
+    companion.update()
 
     if time.monotonic() - self._smooth_checked > 1.0:
       self._smooth_enabled = ui_state.params.get_bool(SMOOTH_FACE_PARAM)

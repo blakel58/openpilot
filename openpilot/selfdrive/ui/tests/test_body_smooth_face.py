@@ -331,3 +331,24 @@ class TestStatus(unittest.TestCase):
     # and a status message is neither a face command nor a guide
     self.assertIsNone(face_command.parse(b'{"status": {"text": "listening"}}'))
     self.assertIsNone(face_command.parse_overlay(b'{"status": {"text": "listening"}}'))
+
+
+class TestCompanion(unittest.TestCase):
+  def test_names_are_kept_speakable(self):
+    from openpilot.selfdrive.ui.body.companion import DEFAULT_NAME, clean_name
+    self.assertEqual(clean_name("  Milo "), "Milo")
+    self.assertEqual(clean_name("R2-D2!"), "RD")
+    self.assertEqual(clean_name("Sir   Roberto the Third of House Comma"), "Sir Roberto the")
+    self.assertEqual(clean_name(""), DEFAULT_NAME)
+    self.assertEqual(clean_name(None), DEFAULT_NAME)
+    self.assertEqual(clean_name("1234"), DEFAULT_NAME)
+
+  def test_messages(self):
+    from openpilot.selfdrive.ui.body.companion import event_message, settings_message
+    self.assertEqual(json.loads(settings_message("Milo")), {"body": {"name": "Milo"}})
+    self.assertEqual(json.loads(event_message("enroll", 7)), {"body": {"event": "enroll", "id": 7}})
+    # neither is mistaken for a face command, a guide or a status word
+    for data in (settings_message("Milo"), event_message("enroll", 7)):
+      self.assertIsNone(face_command.parse(data))
+      self.assertIsNone(face_command.parse_overlay(data))
+      self.assertIsNone(face_command.parse_status(data))
