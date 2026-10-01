@@ -1,7 +1,9 @@
+import json
 import unittest
 
-from openpilot.selfdrive.ui.body.smooth_face import CLOSED_BELOW, EYE_HEIGHT, LOOK_X, ChargeEstimator, SmoothFace, Spring, \
-                                                    charge_panel, charge_strip, format_eta, format_eta_short
+from openpilot.selfdrive.ui.body import face_command
+from openpilot.selfdrive.ui.body.smooth_face import CLOSED_BELOW, EXPRESSIONS, EYE_HEIGHT, LOOK_X, POSE_DEFAULTS, POSE_LIMITS, ChargeEstimator, \
+                                                    SmoothFace, Spring, charge_panel, charge_strip, format_eta, format_eta_short, pose_for
 
 DT = 1 / 30
 
@@ -61,6 +63,7 @@ class TestSmoothFace(unittest.TestCase):
       looks.append(face.look_x.value)
     self.assertLess(min(looks), -0.4)     # it looked one way
     self.assertGreater(max(looks), 0.4)   # then the other
+    face._next_glance = 1e9               # waking schedules a glance; keep it out of the way
     settle(face, "normal", None)
     self.assertAlmostEqual(face.look_x.value, 0., places=1)
 
@@ -95,7 +98,7 @@ class TestSmoothFace(unittest.TestCase):
     closed, looks = 0, []
     for _ in range(round(30 / DT)):
       face.update(DT, "normal", None)
-      closed += face.open.value * face._blink() < CLOSED_BELOW
+      closed += face.pose["open"].value * face._blink() < CLOSED_BELOW
       looks.append(abs(face.look_x.value))
     self.assertGreater(closed, 3)                       # it blinked
     self.assertLess(closed, 0.1 * 30 / DT)              # but its eyes are open nearly all the time
@@ -126,6 +129,98 @@ class TestSmoothFace(unittest.TestCase):
     resting = face.shapes()[0][1][0][1]
     settle(face, "asleep", charging=True)
     self.assertLess(face.shapes()[0][1][0][1], resting - 0.15)
+
+
+class TestExpressions(unittest.TestCase):
+  def test_pose_for(self):
+    self.assertEqual(pose_for("normal"), POSE_DEFAULTS)
+    self.assertEqual(pose_for("no such face"), POSE_DEFAULTS)
+    self.assertEqual(pose_for("happy")["cheek"], 1.)
+    self.assertAlmostEqual(pose_for("happy", intensity=0.5)["cheek"], 0.5)
+    # overrides win, and everything is kept in range
+    pose = pose_for("happy", overrides={"cheek": 0.2, "size": 99., "made up": 1., "lid": "nope"})
+    self.assertEqual(pose["cheek"], 0.2)
+    self.assertEqual(pose["size"], POSE_LIMITS["size"][1])
+    self.assertNotIn("made up", pose)
+
+  def test_every_expression_settles_and_stays_on_screen(self):
+    for name in EXPRESSIONS:
+      face = quiet_face()
+      settle(face, name, seconds=3.)
+      for field, value in pose_for(name).items():
+        self.assertAlmostEqual(face.pose[field].value, value, places=2, msg=f"{name}.{field}")
+      for shape in face.shapes():
+        if shape[0] == "rrect":
+          _, cx, cy, w, h, _, _ = shape
+          self.assertTrue(0 <= cx - w / 2 and cx + w / 2 <= face.aspect and 0 <= cy - h / 2 and cy + h / 2 <= 1, name)
+
+  def test_slanted_lids(self):
+    for name, inner_lower in (("determined", True), ("sad", False)):
+      face = quiet_face()
+      settle(face, name)
+      lids = [s for s in face.shapes() if s[0] == "poly"]
+      self.assertEqual(len(lids), 2)
+      (_, left_pts, _), (_, right_pts, _) = lids
+      # corners: top-left, top-right, bottom-right, bottom-left. the left eye's inner end is its right side
+      left_inner, left_outer = left_pts[2][1], left_pts[3][1]
+      right_inner, right_outer = right_pts[3][1], right_pts[2][1]
+      self.assertEqual(left_inner > left_outer, inner_lower)
+      self.assertEqual(right_inner > right_outer, inner_lower)
+
+  def test_curious_is_lopsided(self):
+    face = quiet_face()
+    settle(face, "curious")
+    left, right = eyes(face)
+    self.assertGreater(right[3], 1.2 * left[3])
+
+  def test_mouth_only_while_talking(self):
+    face = quiet_face()
+    settle(face, "normal")
+    self.assertEqual(len(eyes(face)), 2)
+    settle(face, "normal", talking=0.1, seconds=1.)
+    quiet = face.shapes()[-1]
+    settle(face, "normal", talking=1.0, seconds=1.)
+    loud = face.shapes()[-1]
+    self.assertEqual(len(eyes(face)), 3)          # two eyes and a mouth
+    self.assertGreater(loud[4], 2 * quiet[4])     # it opens wider when louder
+    settle(face, "normal", seconds=2.)
+    self.assertEqual(len(eyes(face)), 2)          # and goes away again
+
+
+class TestFaceCommand(unittest.TestCase):
+  def test_round_trip(self):
+    cmd = face_command.FaceCommand("curious", 0.8, (0.5, -0.25), 0.6, {"lid": 0.1}, 3.)
+    self.assertEqual(face_command.parse(cmd.to_bytes()), cmd)
+
+  def test_message_round_trip(self):
+    import openpilot.cereal.messaging as messaging
+    cmd = face_command.FaceCommand("surprised", look=(0.25, 0.5), talking=0.5, seconds=2.)
+    event = messaging.log_from_bytes(face_command.to_message(cmd).to_bytes())
+    self.assertEqual(event.which(), face_command.SERVICE)
+    self.assertEqual(face_command.parse(bytes(event.customReservedRawData0)), cmd)
+
+  def test_defaults(self):
+    cmd = face_command.parse(b'{"face": {}}')
+    self.assertEqual(cmd, face_command.FaceCommand())
+    self.assertIsNone(cmd.look)
+    self.assertIsNone(cmd.talking)
+
+  def test_ignores_junk(self):
+    for data in (b"", b"not json", b"[1, 2]", b'{"other": 1}', b'{"face": "happy"}', b'{"face": {}}' + b" " * 5000):
+      self.assertIsNone(face_command.parse(data))
+
+  def test_clamps_and_drops_bad_values(self):
+    bad = {"expression": "evil", "intensity": 9, "look": [5, "x"], "talking": -3, "seconds": 9999, "pose": {"size": 50, "nope": 1, "lid": True}}
+    cmd = face_command.parse(json.dumps({"face": bad}).encode())
+    self.assertEqual(cmd.expression, "normal")
+    self.assertEqual(cmd.intensity, 1.)
+    self.assertIsNone(cmd.look)
+    self.assertEqual(cmd.talking, 0.)
+    self.assertEqual(cmd.seconds, face_command.MAX_SECONDS)
+    self.assertEqual(cmd.pose, {"size": 2.})   # smooth_face clamps this to its real range
+
+  def test_cannot_put_it_to_sleep(self):
+    self.assertEqual(face_command.parse(b'{"face": {"expression": "asleep"}}').expression, "normal")
 
 
 class TestCharging(unittest.TestCase):

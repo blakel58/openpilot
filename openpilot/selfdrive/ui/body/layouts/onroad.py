@@ -13,6 +13,7 @@ from openpilot.selfdrive.ui.ui_state import device, ui_state
 from openpilot.selfdrive.ui.body.animations import FaceAnimator, ASLEEP, CONTENT, DIZZY, FOCUSED, HAPPY, INQUISITIVE, LIVE_DOT, NORMAL, \
                                                      OFFROAD_SCENES, SLEEPY, SMOOTH_FACE_SCENES, SURPRISED, TIRED, WINK, YAWN, battery_meter, \
                                                      duration, meter_color
+from openpilot.selfdrive.ui.body import face_command
 from openpilot.selfdrive.ui.body.smooth_face import ChargeEstimator, SmoothFace, asleep_hint, charge_panel, charge_strip, format_eta_short
 
 GRID_COLS = 16
@@ -66,6 +67,10 @@ class BodyLayout(Widget):
     self._smooth_checked = 0.
     self._smooth_time = time.monotonic()
     self._touch: tuple[float, float] | None = None
+    # commands for the smooth face from anything else on the device (see face_command.py)
+    self._face_sock = messaging.sub_sock(face_command.SERVICE, conflate=True, timeout=0)
+    self._face_cmd: face_command.FaceCommand | None = None
+    self._face_cmd_until = 0.
     self._charge_estimator = ChargeEstimator()
     self._charge_eta: float | None = None
     self._charging = False
@@ -133,6 +138,12 @@ class BodyLayout(Widget):
     if time.monotonic() - self._smooth_checked > 1.0:
       self._smooth_enabled = ui_state.params.get_bool(SMOOTH_FACE_PARAM)
       self._smooth_checked = time.monotonic()
+
+    msg = messaging.recv_one_or_none(self._face_sock)
+    if msg is not None:
+      cmd = face_command.parse(bytes(msg.customReservedRawData0))
+      if cmd is not None:
+        self._face_cmd, self._face_cmd_until = cmd, time.monotonic() + cmd.seconds
 
     if ui_state.is_onroad():
       if not self._was_active:
@@ -248,19 +259,43 @@ class BodyLayout(Widget):
         font = gui_app.font(FontWeight.BOLD if bold else FontWeight.MEDIUM)
         size = measure_text_cached(font, string, int(height * u))
         rl.draw_text_ex(font, string, rl.Vector2(rect.x + cx * u - size.x / 2, rect.y + cy * u - size.y / 2), int(height * u), 0, rl.Color(*color))
+      elif kind == "poly":
+        _, points, color = shape
+        a, b, c, d = (rl.Vector2(rect.x + x * u, rect.y + y * u) for x, y in points)
+        # raylib only fills triangles wound one way; draw both windings so the order of the corners doesn't matter
+        for tri in ((a, b, c), (a, c, d), (c, b, a), (d, c, a)):
+          rl.draw_triangle(*tri, rl.Color(*color))
+
+  def _smooth_expression(self, now: float) -> dict:
+    """What the smooth face should be doing right now, as arguments for SmoothFace.update."""
+    if ui_state.is_offroad():
+      return {"expression": "asleep"}
+    cs = ui_state.sm['carState']
+    speed = abs(cs.vEgo) / FULL_SPEED
+    # something on the device is driving the face
+    if self._face_cmd is not None and now < self._face_cmd_until:
+      cmd = self._face_cmd
+      return {"expression": cmd.expression, "intensity": cmd.intensity, "look": cmd.look, "talking": cmd.talking, "overrides": cmd.pose, "speed": speed}
+    # its own reactions
+    if now < self._reaction_until and self._reaction is HAPPY:
+      return {"expression": "happy"}
+    if now < self._reaction_until and self._reaction is SURPRISED:
+      return {"expression": "surprised"}
+    if not self._charging and ui_state.sm.recv_frame['carState'] > 0 and cs.fuelGauge < LOW_BATTERY:
+      return {"expression": "sleepy", "speed": speed}
+    if abs(cs.vEgo) > FAST_SPEED:
+      # the faster it goes, the more it concentrates
+      return {"expression": "determined", "intensity": min(1., (abs(cs.vEgo) - FAST_SPEED) / (FULL_SPEED - FAST_SPEED) + 0.4), "speed": speed}
+    return {"expression": "normal", "speed": speed}
 
   def _render_smooth(self, rect: rl.Rectangle):
     now = time.monotonic()
     dt, self._smooth_time = min(now - self._smooth_time, 0.1), now
-    if ui_state.is_offroad():
-      expression = "asleep"
-    elif now < self._reaction_until and self._reaction is HAPPY:
-      expression = "happy"
-    else:
-      expression = "normal"
-    speed = abs(ui_state.sm['carState'].vEgo) / FULL_SPEED if ui_state.is_onroad() else 0.
+    state = self._smooth_expression(now)
+    if state.get("look") is None:
+      state["look"] = self._look_target(rect)
     self._smooth.aspect = rect.width / rect.height
-    self._smooth.update(dt, expression, self._look_target(rect), speed, charging=self._charging)
+    self._smooth.update(dt, charging=self._charging, **state)
 
     shapes = self._smooth.shapes()
     if ui_state.is_offroad():

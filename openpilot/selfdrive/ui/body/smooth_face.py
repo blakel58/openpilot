@@ -44,6 +44,7 @@ BREATH_PERIOD = 4.2     # seconds per breath while asleep
 HAPPY_HOPS = 2
 HAPPY_HOP_TIME = 0.36   # seconds per hop
 CHARGING_EYE_LIFT = 0.19  # the eyes move up this far while the charging readout is showing
+MOUTH_Y = 0.86
 
 
 @dataclass
@@ -64,17 +65,61 @@ class Spring:
     return self.value
 
 
+# --- poses and expressions ---
+# A pose is a handful of numbers that fully describe the eyes. Every expression is just a
+# pose, the face springs from one to the next, and anything (a script, a model) can ask for
+# a named expression, a blend toward one, or its own numbers.
+POSE_DEFAULTS = {
+  "open": 1.0,    # 0 shut .. 1 open (a little over 1 for wide-eyed)
+  "cheek": 0.0,   # 0..1: cheeks push up from below and arch the eyes (smiling)
+  "lid": 0.0,     # 0..1: how far the upper lids come down
+  "slant": 0.0,   # -1..1: lids slanted; + lowers the inner ends (determined), - lowers the outer ends (sad)
+  "size": 1.0,    # overall eye size
+  "round": 0.0,   # 0..1: 0 = rounded rectangles, 1 = as round as they go
+  "skew": 0.0,    # -1..1: one eye bigger and more open than the other (+ = the right one), a quizzical look
+}
+POSE_LIMITS = {"open": (0., 1.15), "cheek": (0., 1.), "lid": (0., 0.9), "slant": (-1., 1.), "size": (0.7, 1.25), "round": (0., 1.), "skew": (-1., 1.)}
+
+EXPRESSIONS: dict[str, dict[str, float]] = {
+  "normal": {},
+  "asleep": {"open": 0.},
+  "happy": {"cheek": 1.},
+  "surprised": {"open": 1.12, "size": 1.12, "round": 1.},
+  "sad": {"lid": 0.3, "slant": -0.85, "size": 0.95},
+  "determined": {"lid": 0.22, "slant": 0.85},
+  "sleepy": {"lid": 0.52, "open": 0.9},
+  "curious": {"skew": 0.8, "size": 1.03},
+}
+
+
+def pose_for(expression: str, intensity: float = 1., overrides: dict[str, float] | None = None) -> dict[str, float]:
+  """The pose for an expression, blended from the normal face by intensity (0..1), with any numbers overridden."""
+  preset = EXPRESSIONS.get(expression, {})
+  k = max(0., min(1., intensity))
+  pose = {name: default + (preset.get(name, default) - default) * k for name, default in POSE_DEFAULTS.items()}
+  for name, value in (overrides or {}).items():
+    if name in pose and isinstance(value, (int, float)):
+      pose[name] = float(value)
+  return {name: max(POSE_LIMITS[name][0], min(POSE_LIMITS[name][1], value)) for name, value in pose.items()}
+
+
+def _pose_springs() -> dict[str, Spring]:
+  springs = {name: Spring(default, stiffness=150., damping=15.) for name, default in POSE_DEFAULTS.items()}
+  springs["open"] = Spring(0., stiffness=210., damping=17.)  # starts asleep; opening is the snappiest move
+  return springs
+
+
 @dataclass
 class SmoothFace:
   aspect: float = 2.0   # face area width / height
   time: float = 0.
   expression: str = "asleep"
-  open: Spring = field(default_factory=lambda: Spring(0., stiffness=210., damping=17.))
-  happy: Spring = field(default_factory=lambda: Spring(0., stiffness=150., damping=15.))
+  pose: dict[str, Spring] = field(default_factory=_pose_springs)
   look_x: Spring = field(default_factory=lambda: Spring(0., stiffness=230., damping=20.))
   look_y: Spring = field(default_factory=lambda: Spring(0., stiffness=230., damping=20.))
-  focus: Spring = field(default_factory=lambda: Spring(0., stiffness=60., damping=14.))
   lift: Spring = field(default_factory=lambda: Spring(0., stiffness=90., damping=15.))
+  talk: Spring = field(default_factory=lambda: Spring(0., stiffness=260., damping=24.))
+  mouth: Spring = field(default_factory=lambda: Spring(0., stiffness=120., damping=18.))
   _rng: random.Random = field(default_factory=random.Random)
   _blinks: list[float] = field(default_factory=list)       # start times of blinks under way
   _next_blink: float = 2.5
@@ -84,13 +129,17 @@ class SmoothFace:
   _script: list[tuple[float, tuple[float, float]]] = field(default_factory=list)  # (until, look) steps, e.g. waking up
   _happy_start: float = -10.
 
-  def update(self, dt: float, expression: str, look: tuple[float, float] | None = None, speed: float = 0., charging: bool = False) -> None:
+  def update(self, dt: float, expression: str, look: tuple[float, float] | None = None, speed: float = 0., charging: bool = False,
+             talking: float | None = None, intensity: float = 1., overrides: dict[str, float] | None = None) -> None:
     """Advance the face.
 
-    expression: "normal", "happy" or "asleep"
+    expression: a name from EXPRESSIONS
     look:       where something worth looking at is (each axis -1..1), or None to let the eyes wander on their own
     speed:      0..1, how fast the body is driving; it narrows its eyes a little to concentrate
     charging:   asleep on the charger: the eyes move up to make room for the charging readout
+    talking:    None when it isn't speaking; otherwise 0..1, how loud right now. A small mouth appears and moves with it
+    intensity:  0..1, how far toward the expression to go
+    overrides:  pose numbers to use instead of the expression's
     """
     self.time += dt
     now = self.time
@@ -106,10 +155,14 @@ class SmoothFace:
       self.expression = expression
 
     awake = expression != "asleep"
-    self.open.step((1. - 0.22 * max(0., min(1., speed))) if awake else 0., dt)
-    self.happy.step(1. if expression == "happy" else 0., dt)
-    self.focus.step(max(0., min(1., speed)), dt)
+    target_pose = pose_for(expression, intensity, overrides)
+    if awake:
+      target_pose["open"] *= 1. - 0.22 * max(0., min(1., speed))
+    for name, spring in self.pose.items():
+      spring.step(target_pose[name], dt)
     self.lift.step(CHARGING_EYE_LIFT if (charging and not awake) else 0., dt)
+    self.mouth.step(1. if (talking is not None and awake) else 0., dt)
+    self.talk.step(max(0., min(1., talking or 0.)), dt)
 
     # where to look: a scripted move, then whatever was asked for, then an idle glance
     self._script = [s for s in self._script if s[0] > now]
@@ -155,20 +208,25 @@ class SmoothFace:
          ("rrect", center_x, center_y, width, height, corner_radius, color)
          ("circle", center_x, center_y, radius, color)
          ("stroke", [(x, y), ...], thickness, color)
+         ("poly", [(x, y), (x, y), (x, y), (x, y)], color)
     """
     cx = self.aspect / 2
     asleep = self.expression == "asleep"
-    openness = max(0., self.open.value) * self._blink()
-    happy = max(0., min(1.2, self.happy.value))
+    p = {name: spring.value for name, spring in self.pose.items()}
+    blink = self._blink()
+    cheek = max(0., min(1.2, p["cheek"]))
     hop = self._hop()
     breath = math.sin(2 * math.pi * self.time / BREATH_PERIOD) if asleep else 0.
+    mouth = max(0., min(1., self.mouth.value))
 
     shapes: list[tuple] = []
     for side in (-1, 1):
       # the eye it's looking toward is a touch bigger, and the pair slides that way
-      grow = 1. + LOOK_GROW * self.look_x.value * side
+      grow = max(0.5, p["size"]) * (1. + LOOK_GROW * self.look_x.value * side) * (1. + 0.16 * p["skew"] * side)
+      openness = max(0., p["open"]) * blink * (1. + 0.10 * p["skew"] * side)
       x = cx + side * EYE_SPACING + self.look_x.value * LOOK_X
-      y = EYE_Y + self.look_y.value * LOOK_Y - 0.05 * hop - 0.012 * happy + 0.012 * breath - self.lift.value
+      # the eyes shift up a little to make room when the mouth is showing
+      y = EYE_Y + self.look_y.value * LOOK_Y - 0.05 * hop - 0.012 * cheek + 0.012 * breath - self.lift.value - 0.05 * mouth
 
       if openness < CLOSED_BELOW:
         # shut: a gentle downward curve, like a closed eyelid
@@ -180,13 +238,32 @@ class SmoothFace:
 
       # squash and stretch: a closing eye gets wider, a hopping eye gets taller
       squash = 1. - min(1., openness)
-      w = EYE_WIDTH * grow * (1. + 0.16 * squash + 0.06 * happy - 0.05 * hop)
-      h = EYE_HEIGHT * grow * min(1.12, openness) * (1. + 0.08 * hop)
-      shapes.append(("rrect", x, y, w, h, min(EYE_RADIUS * grow, h / 2, w / 2), WHITE))
-      if happy > 0.02:
+      w = EYE_WIDTH * grow * (1. + 0.16 * squash + 0.06 * cheek - 0.05 * hop)
+      h = EYE_HEIGHT * grow * min(1.15, openness) * (1. + 0.08 * hop)
+      roundness = max(0., min(1., p["round"]))
+      radius = min(EYE_RADIUS * grow + roundness * w / 2, h / 2, w / 2)
+      shapes.append(("rrect", x, y, w, h, radius, WHITE))
+
+      # upper lid: a dark shape over the top of the eye, level or slanted
+      inner = max(0., p["lid"] + 0.3 * p["slant"])
+      outer = max(0., p["lid"] - 0.3 * p["slant"])
+      if inner > 0.01 or outer > 0.01:
+        top, margin = y - h / 2 - 0.02, 0.02
+        # the inner end is the one nearer the middle of the face
+        left, right = (outer, inner) if side < 0 else (inner, outer)
+        shapes.append(("poly", [(x - w / 2 - margin, top), (x + w / 2 + margin, top),
+                                (x + w / 2 + margin, y - h / 2 + right * h), (x - w / 2 - margin, y - h / 2 + left * h)], BLACK))
+      if cheek > 0.02:
         # a cheek pushes up from below and turns the eye into an arch
-        cover = 0.58 * min(1., happy) * h
+        cover = 0.58 * min(1., cheek) * h
         shapes.append(("circle", x, y + h / 2 - cover + CHEEK_RADIUS, CHEEK_RADIUS, BLACK))
+
+    if mouth > 0.03:
+      # only while it's speaking: a small mouth that opens with the sound
+      level = max(0., min(1., self.talk.value))
+      mw = (0.15 + 0.03 * level) * mouth
+      mh = (0.028 + 0.11 * level) * mouth
+      shapes.append(("rrect", cx + self.look_x.value * LOOK_X * 0.6, MOUTH_Y, mw, mh, min(mw, mh) / 2, WHITE))
     return shapes
 
 
