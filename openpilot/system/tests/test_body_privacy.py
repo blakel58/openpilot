@@ -4,7 +4,7 @@ from opendbc.car.structs import car
 from openpilot.common.params import Params
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.system import body_privacy
-from openpilot.system.manager.process_config import lan_bridge, logging, qcomgps, uploads_allowed
+from openpilot.system.manager.process_config import body_listening, lan_bridge, logging, procs, qcomgps, uploads_allowed
 
 
 def _cp(not_car: bool):
@@ -16,7 +16,7 @@ def _cp(not_car: bool):
 class TestBodyPrivacy(OpenpilotTestCase):
   def setup_method(self):
     self.params = Params()
-    for k in ("BodyDataSharing", "CarParams", "CarParamsPersistent", "DisableLogging"):
+    for k in ("BodyDataSharing", "BodyListening", "CarParams", "CarParamsPersistent", "DisableLogging"):
       self.params.remove(k)
 
   def _drive(self, not_car: bool):
@@ -100,6 +100,58 @@ class TestBodyPrivacy(OpenpilotTestCase):
 
   def test_no_gps_on_private_body(self):
     assert not qcomgps(True, self.params, self._drive(True))
+
+  def test_body_microphone_off_by_default(self):
+    micd = next(p for p in procs if p.name == "micd")
+    CP = self._drive(True)
+    assert not micd.should_run(True, self.params, CP)
+    self.params.put_bool("BodyListening", True, block=True)
+    assert micd.should_run(True, self.params, CP)
+    assert not micd.should_run(False, self.params, CP)  # never while the body is asleep
+    # the setting does nothing on a car, where the microphone runs as before
+    assert not body_listening(True, self.params, self._drive(False))
+
+  def test_microphone_only_streams_when_listening(self):
+    from openpilot.cereal import messaging
+    from openpilot.system.webrtc.webrtcd import MicrophoneProxy
+
+    class Channel:
+      def __init__(self):
+        self.sent = []
+      def is_open(self):
+        return True
+      def send(self, data):
+        self.sent.append(data)
+
+    self._drive(True)
+    pm = messaging.PubMaster(["rawAudioData"])
+    proxy, channel = MicrophoneProxy(self.params), Channel()
+    proxy.add_channel(channel)
+
+    def speak():
+      import time
+      time.sleep(0.2)
+      for _ in range(3):
+        msg = messaging.new_message("rawAudioData", valid=True)
+        msg.rawAudioData.data = bytes(range(16))
+        msg.rawAudioData.sampleRate = 16000
+        pm.send("rawAudioData", msg)
+      time.sleep(0.2)
+      proxy.update()
+
+    speak()
+    assert channel.sent == []
+
+    self.params.put_bool("BodyListening", True, block=True)
+    proxy.allowed_checked = 0.
+    speak()
+    assert len(channel.sent) == 3  # every chunk, in order
+    import base64
+    import json
+    data = json.loads(channel.sent[0])
+    assert data["type"] == "rawAudioData"
+    assert base64.b64decode(data["data"]["data"]) == bytes(range(16))
+    assert data["data"]["sampleRate"] == 16000
 
   def test_private_body_streams_without_stun(self):
     from teleoprtc import stream as teleoprtc_stream

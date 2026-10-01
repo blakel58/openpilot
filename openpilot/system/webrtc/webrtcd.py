@@ -8,6 +8,7 @@ import time
 import capnp
 import argparse
 import asyncio
+import base64
 import contextlib
 import json
 import uuid
@@ -22,7 +23,7 @@ from openpilot.system.webrtc.helpers import StreamRequestBody
 from openpilot.system.webrtc.schema import generate_field
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
-from openpilot.system.body_privacy import connect_allowed
+from openpilot.system.body_privacy import connect_allowed, is_body
 from openpilot.cereal import messaging, log
 
 SESSION_TIMEOUT_SECONDS = 300
@@ -145,6 +146,46 @@ class CerealOutgoingMessageProxy(AsyncTaskRunner):
       except Exception:
         self.logger.exception("Cereal outgoing proxy failure")
       await asyncio.sleep(0.01)
+
+
+class MicrophoneProxy(AsyncTaskRunner):
+  """Sends the microphone's audio down the data channel, every chunk in order (the cereal proxy keeps only the latest message)."""
+  SERVICE = "rawAudioData"
+
+  def __init__(self, params: Params):
+    super().__init__()
+    self.params = params
+    self.sock = messaging.sub_sock(self.SERVICE)
+    self.channels = []
+    self.allowed = False
+    self.allowed_checked = 0.
+
+  def add_channel(self, channel):
+    self.channels.append(channel)
+
+  def update(self):
+    # only from a comma body whose owner turned listening on (micd doesn't run on a body otherwise)
+    now = time.monotonic()
+    if now - self.allowed_checked > 1.:
+      self.allowed = is_body(self.params) and self.params.get_bool("BodyListening")
+      self.allowed_checked = now
+    for msg in messaging.drain_sock(self.sock):
+      if not self.allowed:
+        continue
+      audio = msg.rawAudioData
+      data = {"data": base64.b64encode(audio.data).decode(), "sampleRate": audio.sampleRate}
+      encoded_msg = json.dumps({"type": self.SERVICE, "logMonoTime": msg.logMonoTime, "valid": msg.valid, "data": data}).encode()
+      for channel in self.channels:
+        if channel.is_open():
+          channel.send(encoded_msg)
+
+  async def run(self):
+    while True:
+      try:
+        self.update()
+      except Exception:
+        self.logger.exception("Microphone proxy failure")
+      await asyncio.sleep(0.02)
 
 
 class CerealIncomingMessageProxy:
@@ -278,8 +319,13 @@ class StreamSession:
     self.bitrate_controller: LivestreamBitrateController | None = None
     if len(body.bridge_services_in) > 0:
       self.incoming_bridge = CerealIncomingMessageProxy(self.shared_pub_master)
-    if len(body.bridge_services_out) > 0:
-      self.outgoing_bridge = CerealOutgoingMessageProxy(body.bridge_services_out, self.enabled)
+    # microphone audio is raw bytes, which the cereal proxy can't carry
+    services_out = [s for s in body.bridge_services_out if s != MicrophoneProxy.SERVICE]
+    self.microphone: MicrophoneProxy | None = None
+    if MicrophoneProxy.SERVICE in body.bridge_services_out:
+      self.microphone = MicrophoneProxy(self.params)
+    if len(services_out) > 0:
+      self.outgoing_bridge = CerealOutgoingMessageProxy(services_out, self.enabled)
     self.bitrate_controller = LivestreamBitrateController(self.stream.get_receiver_report_stats, self.params, self.enabled)
 
     self.run_task: asyncio.Task | None = None
@@ -374,6 +420,9 @@ class StreamSession:
           channel = self.stream.get_messaging_channel()
           self.outgoing_bridge.add_channel(channel)
           self.outgoing_bridge.start()
+        if self.microphone is not None:
+          self.microphone.add_channel(self.stream.get_messaging_channel())
+          self.microphone.start()
       if self.bitrate_controller is not None:
         self.bitrate_controller.start()
 
@@ -402,6 +451,8 @@ class StreamSession:
         await self.bitrate_controller.stop()
       if self.outgoing_bridge is not None:
         await self.outgoing_bridge.stop()
+      if self.microphone is not None:
+        await self.microphone.stop()
       for track in self.video_tracks:
         track.stop()
       self.video_tracks.clear()

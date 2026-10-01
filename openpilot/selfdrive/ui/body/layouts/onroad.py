@@ -26,6 +26,9 @@ IDLE_STEER_THRESH = 0.5    # degrees — below this counts as no input
 IDLE_SPEED_THRESH = 0.01   # m/s — below this counts as no input
 LOW_BATTERY = 0.15         # fuelGauge below this looks tired
 TELEOP_TIMEOUT = 1.0       # seconds since the last joystick message before teleop counts as disconnected
+MIC_TIMEOUT = 1.0          # seconds since the last microphone audio before the mic counts as off
+MIC_DOT = (7, 0)           # opposite corner from the teleop dot
+MIC_COLOR = (70, 150, 255, 255)
 WINK_DURATION = 1.5        # seconds the wink plays when someone connects
 # offroad the screen only stays on for 30s after a touch, so scenes are timed from when it wakes
 SCENE_FIRST_DELAY = 2.0    # seconds after the screen wakes before the first scene plays
@@ -231,6 +234,11 @@ class BodyLayout(Widget):
     self._turning_right = steer <= -0.05
 
   # play animation on screen tap
+  def _mic_live(self) -> bool:
+    # goes by the audio itself, not the setting: the dot is on exactly when the microphone is producing sound
+    sm = ui_state.sm
+    return sm.recv_frame['rawAudioData'] > 0 and (time.monotonic() - sm.recv_time['rawAudioData']) < MIC_TIMEOUT
+
   def _handle_mouse_release(self, mouse_pos):
     super()._handle_mouse_release(mouse_pos)
     if not self._was_active:
@@ -338,6 +346,8 @@ class BodyLayout(Widget):
     if self._teleop_connected:
       pulse = 0.7 + 0.3 * (0.5 - 0.5 * math.cos(2 * math.pi * time.monotonic() / 1.2))
       rl.draw_circle(int(rect.x + rect.width - 0.09 * rect.height), int(rect.y + 0.09 * rect.height), 0.035 * rect.height * pulse, rl.Color(255, 60, 50, 255))
+    if self._mic_live():
+      rl.draw_circle(int(rect.x + 0.09 * rect.height), int(rect.y + 0.09 * rect.height), 0.03 * rect.height, rl.Color(*MIC_COLOR))
 
   def _render_overlay(self, rect: rl.Rectangle, overlay: face_command.Overlay):
     """A guide for someone standing in front of the body: which parts of the view are done, where to go next, and an outline."""
@@ -407,3 +417,6 @@ class BodyLayout(Widget):
     if self._teleop_connected:
       pulse = 0.7 + 0.3 * (0.5 - 0.5 * math.cos(2 * math.pi * time.monotonic() / 1.2))
       self.draw_dot_grid(rect, [(*LIVE_DOT, pulse)], rl.Color(255, 60, 50, 255))
+    # steady blue dot whenever the microphone is live
+    if self._mic_live():
+      self.draw_dot_grid(rect, [MIC_DOT], rl.Color(*MIC_COLOR))
