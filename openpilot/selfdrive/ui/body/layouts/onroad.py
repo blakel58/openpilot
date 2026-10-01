@@ -14,7 +14,8 @@ from openpilot.selfdrive.ui.body.animations import FaceAnimator, ASLEEP, CONTENT
                                                      OFFROAD_SCENES, SLEEPY, SMOOTH_FACE_SCENES, SURPRISED, TIRED, WINK, YAWN, battery_meter, \
                                                      duration, meter_color
 from openpilot.selfdrive.ui.body import face_command
-from openpilot.selfdrive.ui.body.smooth_face import ChargeEstimator, SmoothFace, asleep_hint, charge_panel, charge_strip, format_eta_short
+from openpilot.selfdrive.ui.body.smooth_face import CHASE_SECONDS, ChargeEstimator, SmoothFace, asleep_hint, charge_panel, charge_strip, \
+                                                    chase_scene, format_eta_short
 
 GRID_COLS = 16
 GRID_ROWS = 8
@@ -57,6 +58,7 @@ class BodyLayout(Widget):
     self._was_awake = False
     self._scene = ASLEEP
     self._scene_until = 0.
+    self._smooth_chase_start: float | None = None
     self._reaction = NORMAL
     self._reaction_until = 0.
     self._spin_start: float | None = None
@@ -198,14 +200,23 @@ class BodyLayout(Widget):
         self._next_scene_time = now + SCENE_FIRST_DELAY
       self._was_active = False
       # now and then, play a short scene, then go back to the sleeping face
-      if device.awake and now >= self._next_scene_time:
+      if device.awake and now >= self._next_scene_time and not self._teleop_connected:
         scenes = SMOOTH_FACE_SCENES if self._smooth_enabled else OFFROAD_SCENES
-        self._scene = scenes[self._scene_index % len(scenes)]
+        scene = scenes[self._scene_index % len(scenes)]
         self._scene_index += 1
-        self._scene_until = now + duration(self._scene)
+        if scene is None:
+          # the chase drawn in the smooth style
+          self._scene, self._smooth_chase_start, self._scene_until = ASLEEP, now, now + CHASE_SECONDS
+        else:
+          self._scene, self._smooth_chase_start, self._scene_until = scene, None, now + duration(scene)
         self._next_scene_time = self._scene_until + random.uniform(*SCENE_GAP)
-      # keep asking for the scene until it's done: asking for another animation mid-play rewinds it
-      self._animator.set_animation(self._scene if now < self._scene_until else ASLEEP)
+      if self._teleop_connected:
+        # someone is connected and can see through the camera: it shouldn't look asleep
+        self._scene_until, self._smooth_chase_start = 0., None
+        self._animator.set_animation(NORMAL)
+      else:
+        # keep asking for the scene until it's done: asking for another animation mid-play rewinds it
+        self._animator.set_animation(self._scene if now < self._scene_until else ASLEEP)
 
     self._was_awake = device.awake
 
@@ -276,7 +287,8 @@ class BodyLayout(Widget):
   def _smooth_expression(self, now: float) -> dict:
     """What the smooth face should be doing right now, as arguments for SmoothFace.update."""
     if ui_state.is_offroad():
-      return {"expression": "asleep"}
+      # asleep, unless someone is connected and can see through the camera
+      return {"expression": "normal" if self._teleop_connected else "asleep"}
     cs = ui_state.sm['carState']
     speed = abs(cs.vEgo) / FULL_SPEED
     # something on the device is driving the face
@@ -305,7 +317,10 @@ class BodyLayout(Widget):
     self._smooth.update(dt, charging=self._charging, **state)
 
     shapes = self._smooth.shapes()
-    if ui_state.is_offroad():
+    if ui_state.is_offroad() and self._teleop_connected:
+      if self._charging:
+        shapes += charge_strip(self._smooth.aspect, self._battery, meter_color(self._battery))
+    elif ui_state.is_offroad():
       if self._charging:
         shapes += charge_panel(self._smooth.aspect, self._battery, meter_color(self._battery), self._charge_eta, now, now - self._plug_time)
       else:
@@ -348,7 +363,10 @@ class BodyLayout(Widget):
       return
     dots = self._animator.get_dots()
     animation = self._animator._animation
-    # the smooth face takes over, except while one of the tiny body's scenes is playing
+    if self._smooth_enabled and self._smooth_chase_start is not None and time.monotonic() < self._scene_until:
+      self._draw_shapes(rect, chase_scene(rect.width / rect.height, time.monotonic() - self._smooth_chase_start))
+      return
+    # the smooth face takes over, except while one of the tiny body's dot scenes is playing
     if self._smooth_enabled and animation not in OFFROAD_SCENES:
       self._render_smooth(rect)
       return
@@ -361,7 +379,7 @@ class BodyLayout(Widget):
     self.draw_dot_grid(rect, dots, rl.WHITE)
 
     # the sleeping face is dimmed behind the text; scenes have the screen to themselves at full brightness
-    if ui_state.is_offroad() and animation not in OFFROAD_SCENES:
+    if ui_state.is_offroad() and animation not in OFFROAD_SCENES and not self._teleop_connected:
       rl.draw_rectangle(int(self.rect.x), int(self.rect.y), int(self.rect.width), int(self.rect.height), rl.Color(0, 0, 0, 175))
       upper_half = rl.Rectangle(rect.x, rect.y, rect.width, rect.height / 2)
       eta = format_eta_short(self._charge_eta)

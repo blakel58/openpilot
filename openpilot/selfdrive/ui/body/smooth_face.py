@@ -370,3 +370,98 @@ def charge_strip(aspect: float, level: float, color: tuple[int, int, int, int]) 
     shapes.append(("rrect", x0 + filled / 2, y, filled, height, height / 2, color))
   shapes.append(("text", cx + width / 2 + 0.09, y, 0.055, f"{round(level * 100)}%", DIM_TEXT, False))
   return shapes
+
+
+# --- the chase, in the smooth style ---
+# A comma hops across the screen with a tiny comma body rolling after it. Halfway, the comma
+# stops for a breather, the body nearly catches it, and the comma bolts.
+
+CHASE_SECONDS = 6.4
+GROUND_Y = 0.88
+_S = 1.5                 # overall size of the two characters
+_WHEEL_R = 0.042 * _S
+_COMMA_R = 0.047 * _S
+
+
+def _ease(t: float) -> float:
+  t = max(0., min(1., t))
+  return t * t * (3 - 2 * t)
+
+
+def _comma_x(t: float, aspect: float) -> float:
+  rest = 0.6 * aspect
+  if t < 2.6:
+    return -0.25 + (rest + 0.25) * (t / 2.6)
+  if t < 3.5:
+    return rest
+  return rest + (aspect + 0.6 - rest) * ((t - 3.5) / 1.5) ** 1.6
+
+
+def _body_x(t: float, aspect: float) -> float:
+  caught_up = 0.6 * aspect - 0.42
+  if t < 3.6:
+    return -0.6 + (caught_up + 0.6) * _ease((t - 0.5) / 3.0)
+  return caught_up + (aspect + 0.8 - caught_up) * _ease((t - 3.9) / 2.3) ** 1.3
+
+
+def comma_shapes(cx: float, cy: float, r: float, squash: float = 0., wag: float = 0.) -> list[tuple]:
+  """A comma: a round head with one smooth tail that hooks down to the left and tapers to a point.
+
+  (cx, cy) is the middle of the head and r its radius. squash flattens it (landing from a hop),
+  wag swings the tip of the tail sideways.
+  """
+  shapes: list[tuple] = [("rrect", cx, cy, 2 * r * (1. + squash), 2 * r * (1. - squash), r * (1. - squash), WHITE)]
+  # the tail's center line is a curve from inside the head, out to the right, then hooking down-left
+  start = (0.30 * r, 0.25 * r)
+  bend = (1.05 * r, 1.55 * r * (1. - squash))
+  tip = ((-0.75 + wag) * r, 2.35 * r * (1. - squash))
+  steps = 10
+  rows = []
+  for i in range(steps + 1):
+    u = i / steps
+    x = (1 - u) ** 2 * start[0] + 2 * u * (1 - u) * bend[0] + u ** 2 * tip[0]
+    y = (1 - u) ** 2 * start[1] + 2 * u * (1 - u) * bend[1] + u ** 2 * tip[1]
+    # direction along the curve, to find the two edges on either side of it
+    dx = 2 * (1 - u) * (bend[0] - start[0]) + 2 * u * (tip[0] - bend[0])
+    dy = 2 * (1 - u) * (bend[1] - start[1]) + 2 * u * (tip[1] - bend[1])
+    norm = math.hypot(dx, dy) or 1.
+    half = 0.62 * r * (1 - u) ** 1.25 + 0.02 * r
+    rows.append(((cx + x - dy / norm * half, cy + y + dx / norm * half), (cx + x + dy / norm * half, cy + y - dx / norm * half)))
+  for (a0, b0), (a1, b1) in zip(rows, rows[1:], strict=False):
+    shapes.append(("poly", [a0, b0, b1, a1], WHITE))
+  return shapes
+
+
+def chase_scene(aspect: float, t: float) -> list[tuple]:
+  """The shapes for the chase, t seconds in."""
+  shapes: list[tuple] = [("stroke", [(0.06, GROUND_Y + 0.012), (aspect - 0.06, GROUND_Y + 0.012)], 0.006, (255, 255, 255, 45))]
+
+  # the comma: a round head with a tail of shrinking dots, hopping; it squashes as it lands
+  cx = _comma_x(t, aspect)
+  resting = 2.6 <= t < 3.5
+  dashing = t >= 3.5
+  hops = cx / (0.46 if dashing else 0.32)
+  height = 0. if resting else abs(math.sin(math.pi * hops)) * (0.26 if dashing else 0.17)
+  squash = 0.22 * max(0., 1. - height / 0.05) if not resting else 0.05 * math.sin(t * 9)
+  cy = GROUND_Y - 2.37 * _COMMA_R * (1. - squash) - height
+  shapes += comma_shapes(cx, cy, _COMMA_R, squash, wag=0.25 * math.sin(t * 12) if not resting else 0.)
+
+  # the tiny body: wheels that turn, a neck, and a head with two eyes fixed on the comma
+  bx = _body_x(t, aspect)
+  startled = 3.5 <= t < 4.0   # the comma just bolted
+  speed = _body_x(t + 0.05, aspect) - bx
+  lean = min(0.03, speed * 0.9) * _S
+  bob = 0.006 * _S * math.sin(bx * 28)
+  axle_y = GROUND_Y - _WHEEL_R
+  for side in (-1, 1):
+    wx = bx + side * 0.068 * _S
+    shapes.append(("circle", wx, axle_y, _WHEEL_R, WHITE))
+    angle = wx / _WHEEL_R  # rolling without slipping
+    shapes.append(("circle", wx + 0.022 * _S * math.cos(angle), axle_y + 0.022 * _S * math.sin(angle), 0.009 * _S, BLACK))
+  shapes.append(("stroke", [(bx, axle_y - 0.02 * _S), (bx + lean, axle_y - 0.115 * _S + bob)], 0.022 * _S, WHITE))
+  hx, hy = bx + lean * 1.4, axle_y - 0.175 * _S + bob - (0.012 * _S if startled else 0.)
+  shapes.append(("rrect", hx, hy, 0.215 * _S, 0.135 * _S, 0.04 * _S, WHITE))
+  eye_h = (0.075 if startled else 0.052) * _S
+  for side in (-1, 1):
+    shapes.append(("rrect", hx + (side * 0.045 + 0.014) * _S, hy, 0.03 * _S, eye_h, 0.014 * _S, BLACK))
+  return shapes

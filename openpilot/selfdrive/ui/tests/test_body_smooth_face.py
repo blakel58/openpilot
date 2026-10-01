@@ -3,7 +3,8 @@ import unittest
 
 from openpilot.selfdrive.ui.body import face_command
 from openpilot.selfdrive.ui.body.smooth_face import CLOSED_BELOW, EXPRESSIONS, EYE_HEIGHT, LOOK_X, POSE_DEFAULTS, POSE_LIMITS, ChargeEstimator, \
-                                                    SmoothFace, Spring, charge_panel, charge_strip, format_eta, format_eta_short, pose_for
+                                                    SmoothFace, Spring, CHASE_SECONDS, charge_panel, charge_strip, chase_scene, format_eta, \
+                                                    format_eta_short, pose_for
 
 DT = 1 / 30
 
@@ -221,6 +222,23 @@ class TestFaceCommand(unittest.TestCase):
 
   def test_cannot_put_it_to_sleep(self):
     self.assertEqual(face_command.parse(b'{"face": {"expression": "asleep"}}').expression, "normal")
+
+
+class TestChaseScene(unittest.TestCase):
+  def test_plays_through(self):
+    for aspect in (1.72, 2.0):
+      on_screen = []
+      for i in range(round(CHASE_SECONDS / DT) + 1):
+        shapes = chase_scene(aspect, i * DT)
+        self.assertEqual(shapes[0][0], "stroke")  # the ground line
+        xs = [s[1] for s in shapes[1:] if s[0] in ("rrect", "circle")]
+        on_screen.append(sum(0 <= x <= aspect for x in xs))
+        # nothing is drawn below the ground
+        for s in shapes[1:]:
+          if s[0] == "circle":
+            self.assertLessEqual(s[2] + s[3], 0.9 + 1e-6)
+      self.assertGreaterEqual(max(on_screen), 8)   # both characters are on screen in the middle (comma head, wheels, hubs, head, eyes)
+      self.assertEqual(on_screen[-1], 0)       # and both have left by the end
 
 
 class TestOverlay(unittest.TestCase):
