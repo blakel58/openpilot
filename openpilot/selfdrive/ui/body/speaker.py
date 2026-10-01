@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
 """
-Plays sound sent to the comma body through its speaker, so a computer on the
-network can talk through it: a voice, or the other side of a call.
+Sound sent to the comma body for its speaker, so a computer on the network can
+talk through it: a voice, or the other side of a call. soundd owns the speaker
+and mixes this in with its own sounds.
 
 Audio arrives as small JSON messages on the customReservedRawData1 service
 (the teleop data channel passes them on, like joystick commands):
@@ -19,8 +19,6 @@ import threading
 import numpy as np
 
 from openpilot.cereal import messaging
-from openpilot.common.swaglog import cloudlog
-from openpilot.common.utils import retry
 
 SERVICE = "customReservedRawData1"
 OUTPUT_RATE = 48000
@@ -88,35 +86,15 @@ class Speaker:
           self.playing = False
     return out * VOLUME
 
-  def callback(self, outdata, frames, time, status):
-    outdata[:, 0] = self.take(frames)
-
-  @retry(attempts=10, delay=3)
-  def get_stream(self, sd):
-    # reload sounddevice to reinitialize portaudio
-    sd._terminate()
-    sd._initialize()
-    return sd.OutputStream(channels=1, samplerate=OUTPUT_RATE, callback=self.callback, blocksize=OUTPUT_RATE // 20)
-
-  def run(self):
-    # sounddevice must be imported after forking processes
-    import sounddevice as sd
-
+  def receive_forever(self) -> None:
     sock = messaging.sub_sock(SERVICE, timeout=1000)
-    with self.get_stream(sd) as stream:
-      cloudlog.info(f"body speaker stream started: {stream.samplerate=} {stream.channels=} {stream.device=}")
-      while True:
-        for msg in messaging.drain_sock(sock, wait_for_one=True):
-          samples, flush = parse(bytes(msg.customReservedRawData1))
-          if flush:
-            self.flush()
-          elif samples is not None:
-            self.add(samples)
+    while True:
+      for msg in messaging.drain_sock(sock, wait_for_one=True):
+        samples, flush = parse(bytes(msg.customReservedRawData1))
+        if flush:
+          self.flush()
+        elif samples is not None:
+          self.add(samples)
 
-
-def main():
-  Speaker().run()
-
-
-if __name__ == "__main__":
-  main()
+  def start(self) -> None:
+    threading.Thread(target=self.receive_forever, daemon=True).start()

@@ -4,7 +4,7 @@ import json
 
 import numpy as np
 
-from openpilot.selfdrive.ui.body.speakerd import MAX_BUFFER_SECONDS, OUTPUT_RATE, START_BUFFER_SECONDS, Speaker, parse
+from openpilot.selfdrive.ui.body.speaker import MAX_BUFFER_SECONDS, OUTPUT_RATE, START_BUFFER_SECONDS, Speaker, parse
 
 
 def message(samples: np.ndarray, rate: int = 16000) -> bytes:

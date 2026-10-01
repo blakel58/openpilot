@@ -12,6 +12,7 @@ from openpilot.common.utils import retry
 from openpilot.common.swaglog import cloudlog
 
 from openpilot.system import micd
+from openpilot.selfdrive.ui.body.speaker import OUTPUT_RATE, Speaker
 from openpilot.common.hardware import HARDWARE
 
 SAMPLE_RATE = 48000
@@ -79,6 +80,10 @@ class Soundd:
 
     self.spl_filter_weighted = FirstOrderFilter(0, 2.5, FILTER_DT, initialized=False)
 
+    # comma body: speech sent over the teleop data channel, mixed in with the alert sounds
+    assert OUTPUT_RATE == SAMPLE_RATE
+    self.speech = Speaker()
+
   def load_sounds(self):
     self.loaded_sounds: dict[int, np.ndarray] = {}
 
@@ -124,7 +129,7 @@ class Soundd:
   def callback(self, data_out: np.ndarray, frames: int, time, status) -> None:
     if status:
       cloudlog.warning(f"soundd stream over/underflow: {status}")
-    data_out[:frames, 0] = self.get_sound_data(frames)
+    data_out[:frames, 0] = np.clip(self.get_sound_data(frames) + self.speech.take(frames), -1., 1.)
 
   def update_alert(self, new_alert):
     current_alert_played_once = self.current_alert == AudibleAlert.none or self.current_sound_frame >= len(self.loaded_sounds[self.current_sound])
@@ -172,6 +177,7 @@ class Soundd:
     import sounddevice as sd
     micd.patch_sounddevice(sd)
 
+    self.speech.start()
     sm = messaging.SubMaster(['selfdriveState', 'soundPressure'])
 
     with self.get_stream(sd) as stream:
