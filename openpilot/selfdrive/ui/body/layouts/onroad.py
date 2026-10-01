@@ -10,7 +10,9 @@ from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.selfdrive.ui.ui_state import device, ui_state
 from openpilot.selfdrive.ui.body.animations import FaceAnimator, ASLEEP, CONTENT, DIZZY, FOCUSED, HAPPY, INQUISITIVE, LIVE_DOT, NORMAL, \
-                                                     OFFROAD_SCENES, SLEEPY, SURPRISED, TIRED, WINK, YAWN, battery_meter, duration
+                                                     OFFROAD_SCENES, SLEEPY, SMOOTH_FACE_SCENES, SURPRISED, TIRED, WINK, YAWN, battery_meter, \
+                                                     duration, meter_color
+from openpilot.selfdrive.ui.body.smooth_face import SmoothFace, charge_bar
 
 GRID_COLS = 16
 GRID_ROWS = 8
@@ -31,6 +33,8 @@ FAST_SPEED = 0.45          # m/s — above this the face concentrates
 SPIN_STEER = 0.5           # joystick turn axis beyond this, while barely moving, counts as spinning in place
 SPIN_SPEED = 0.15          # m/s
 SPIN_TIME = 3.0            # seconds of spinning before it gets dizzy
+SMOOTH_FACE_PARAM = "BodySmoothFace"
+FACE_PROB_THRESH = 0.5     # driver monitoring's confidence that it sees a face, to look at it
 
 
 # This class is used both in BIG (tizi) and small (mici) UIs
@@ -54,6 +58,12 @@ class BodyLayout(Widget):
     self._reaction_until = 0.
     self._spin_start: float | None = None
     self._plug_time = 0.
+    # the optional smooth face (BodySmoothFace); the dot face stays the default
+    self._smooth = SmoothFace()
+    self._smooth_enabled = False
+    self._smooth_checked = 0.
+    self._smooth_time = time.monotonic()
+    self._touch: tuple[float, float] | None = None
     self._charging = False
     self._battery = 0.
     self._battery_time = 0.
@@ -103,17 +113,29 @@ class BodyLayout(Widget):
     self._reaction = animation
     self._reaction_until = time.monotonic() + duration(animation)
 
+  def _handle_mouse_event(self, mouse_event):
+    super()._handle_mouse_event(mouse_event)
+    # remember where a finger is, so the smooth face can look at it
+    self._touch = (mouse_event.pos.x, mouse_event.pos.y) if mouse_event.left_down else None
+
   def _update_state(self):
     super()._update_state()
 
     sm = ui_state.sm
     self._update_battery(sm)
 
+    if time.monotonic() - self._smooth_checked > 1.0:
+      self._smooth_enabled = ui_state.params.get_bool(SMOOTH_FACE_PARAM)
+      self._smooth_checked = time.monotonic()
+
     if ui_state.is_onroad():
       if not self._was_active:
         self._last_input_time = time.monotonic()
         self._was_active = True
         self._yawn_until = time.monotonic() + duration(YAWN)  # waking up
+        # cut straight to the yawn, rather than rewinding whatever sleep scene was playing
+        self._animator = FaceAnimator(ASLEEP)
+        self._scene_until = 0.
 
       cs = sm['carState']
       has_input = abs(cs.steeringAngleDeg) > IDLE_STEER_THRESH or abs(cs.vEgo) > IDLE_SPEED_THRESH
@@ -153,7 +175,8 @@ class BodyLayout(Widget):
       self._was_active = False
       # now and then, play a short scene, then go back to the sleeping face
       if device.awake and now >= self._next_scene_time:
-        self._scene = OFFROAD_SCENES[self._scene_index % len(OFFROAD_SCENES)]
+        scenes = SMOOTH_FACE_SCENES if self._smooth_enabled else OFFROAD_SCENES
+        self._scene = scenes[self._scene_index % len(scenes)]
         self._scene_index += 1
         self._scene_until = now + duration(self._scene)
         self._next_scene_time = self._scene_until + random.uniform(*SCENE_GAP)
@@ -180,9 +203,62 @@ class BodyLayout(Widget):
     else:
       self._react(HAPPY)  # a pat on the head
 
+  def _look_target(self, rect: rl.Rectangle) -> tuple[float, float]:
+    """Where the smooth face looks: at a finger on the screen, into a turn, or at a face it can see."""
+    if self._touch is not None:
+      return (2 * (self._touch[0] - rect.x) / rect.width - 1, 2 * (self._touch[1] - rect.y) / rect.height - 1)
+    if self._turning_left or self._turning_right:
+      return (-1. if self._turning_left else 1., 0.)
+    if ui_state.is_onroad():
+      driver = ui_state.sm['driverStateV2'].leftDriverData
+      if driver.faceProb > FACE_PROB_THRESH and len(driver.facePosition) >= 2:
+        # TODO: check the signs on the body; the driver camera is the body's front camera
+        return (-4 * driver.facePosition[0], 4 * driver.facePosition[1])
+    return (0., 0.)
+
+  def _render_smooth(self, rect: rl.Rectangle):
+    now = time.monotonic()
+    dt, self._smooth_time = min(now - self._smooth_time, 0.1), now
+    if ui_state.is_offroad():
+      expression = "asleep"
+    elif now < self._reaction_until and self._reaction is HAPPY:
+      expression = "happy"
+    else:
+      expression = "normal"
+    self._smooth.aspect = rect.width / rect.height
+    self._smooth.update(dt, expression, self._look_target(rect))
+
+    shapes = self._smooth.shapes()
+    if self._charging:
+      shapes += charge_bar(self._smooth.aspect, self._battery, meter_color(self._battery))
+    for shape in shapes:
+      if shape[0] == "pill":
+        _, cx, cy, w, h, color = shape
+        r = rl.Rectangle(rect.x + (cx - w / 2) * rect.height, rect.y + (cy - h / 2) * rect.height, w * rect.height, h * rect.height)
+        rl.draw_rectangle_rounded(r, 1.0, 24, rl.Color(*color))
+      elif shape[0] == "stroke":
+        _, points, thickness, color = shape
+        pts = [rl.Vector2(rect.x + x * rect.height, rect.y + y * rect.height) for x, y in points]
+        for a, b in zip(pts, pts[1:], strict=False):
+          rl.draw_line_ex(a, b, thickness * rect.height, rl.Color(*color))
+        for pt in pts:
+          rl.draw_circle_v(pt, thickness * rect.height / 2, rl.Color(*color))
+
+    if ui_state.is_offroad():
+      upper_half = rl.Rectangle(rect.x, rect.y, rect.width, rect.height / 2)
+      self._offroad_label.set_text(f"charging {round(self._battery * 100)}%" if self._charging else "switch to drive mode to use")
+      self._offroad_label.render(upper_half)
+    if self._teleop_connected:
+      pulse = 0.7 + 0.3 * (0.5 - 0.5 * math.cos(2 * math.pi * time.monotonic() / 1.2))
+      rl.draw_circle(int(rect.x + rect.width - 0.09 * rect.height), int(rect.y + 0.09 * rect.height), 0.035 * rect.height * pulse, rl.Color(255, 60, 50, 255))
+
   def _render(self, rect: rl.Rectangle):
     dots = self._animator.get_dots()
     animation = self._animator._animation
+    # the smooth face takes over, except while one of the tiny body's scenes is playing
+    if self._smooth_enabled and animation not in OFFROAD_SCENES:
+      self._render_smooth(rect)
+      return
     if self._turning_left and animation.left_turn_remove:
       remove_set = set(animation.left_turn_remove)
       dots = [d for d in dots if d not in remove_set]

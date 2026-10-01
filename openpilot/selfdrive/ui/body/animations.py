@@ -312,6 +312,8 @@ YAWN = Animation(
 
 # played in this order, one at a time, while the body sleeps
 OFFROAD_SCENES = [ROLL, PEEK, CHASE, SNORE, ROLL_BACK, PEEK]
+# the smooth face keeps only the tiny body's scenes
+SMOOTH_FACE_SCENES = [CHASE, ROLL, CHASE, ROLL_BACK]
 
 
 def duration(animation: Animation) -> float:
