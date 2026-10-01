@@ -10,7 +10,7 @@ from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.selfdrive.ui.ui_state import device, ui_state
-from openpilot.selfdrive.ui.body.animations import FaceAnimator, ASLEEP, CONTENT, DIZZY, FOCUSED, HAPPY, INQUISITIVE, LIVE_DOT, NORMAL, \
+from openpilot.selfdrive.ui.body.animations import FaceAnimator, ASLEEP, CONTENT, DIZZY, FOCUSED, HAPPY, INQUISITIVE, NORMAL, \
                                                      OFFROAD_SCENES, SLEEPY, SMOOTH_FACE_SCENES, SURPRISED, TIRED, WINK, YAWN, battery_meter, \
                                                      duration, meter_color
 from openpilot.selfdrive.ui.body import face_command
@@ -27,8 +27,9 @@ IDLE_SPEED_THRESH = 0.01   # m/s — below this counts as no input
 LOW_BATTERY = 0.15         # fuelGauge below this looks tired
 TELEOP_TIMEOUT = 1.0       # seconds since the last joystick message before teleop counts as disconnected
 MIC_TIMEOUT = 1.0          # seconds since the last microphone audio before the mic counts as off
-MIC_DOT = (7, 0)           # opposite corner from the teleop dot
 MIC_COLOR = (70, 150, 255, 255)
+STATUS_COLOR = (80, 220, 130, 255)   # the microphone badge while the body is doing something with what it heard
+BADGE_HEIGHT = 0.1         # of the screen's height
 WINK_DURATION = 1.5        # seconds the wink plays when someone connects
 # offroad the screen only stays on for 30s after a touch, so scenes are timed from when it wakes
 SCENE_FIRST_DELAY = 2.0    # seconds after the screen wakes before the first scene plays
@@ -76,6 +77,8 @@ class BodyLayout(Widget):
     self._face_sock = messaging.sub_sock(face_command.SERVICE, conflate=True, timeout=0)
     self._face_cmd: face_command.FaceCommand | None = None
     self._face_cmd_until = 0.
+    self._status_text = ""
+    self._status_until = 0.
     self._overlay: face_command.Overlay | None = None
     self._overlay_until = 0.
     self._charge_estimator = ChargeEstimator()
@@ -152,6 +155,9 @@ class BodyLayout(Widget):
       cmd = face_command.parse(data)
       if cmd is not None:
         self._face_cmd, self._face_cmd_until = cmd, time.monotonic() + cmd.seconds
+      status = face_command.parse_status(data)
+      if status is not None:
+        self._status_text, self._status_until = status[0], time.monotonic() + status[1]
       overlay = face_command.parse_overlay(data)
       if overlay is not None:
         self._overlay, self._overlay_until = overlay, time.monotonic() + face_command.OVERLAY_SECONDS
@@ -238,6 +244,39 @@ class BodyLayout(Widget):
     # goes by the audio itself, not the setting: the dot is on exactly when the microphone is producing sound
     sm = ui_state.sm
     return sm.recv_frame['rawAudioData'] > 0 and (time.monotonic() - sm.recv_time['rawAudioData']) < MIC_TIMEOUT
+
+  def _draw_badge(self, rect: rl.Rectangle, text: str, color: rl.Color, right: bool, icon: str, pulse: float = 1.):
+    """A labelled pill in a top corner: an icon and a word, so what it means doesn't have to be guessed."""
+    h = BADGE_HEIGHT * rect.height
+    font = gui_app.font(FontWeight.MEDIUM)
+    text_size = measure_text_cached(font, text, int(0.5 * h))
+    width = h * 1.25 + text_size.x + 0.4 * h
+    margin = 0.05 * rect.height
+    x = rect.x + rect.width - margin - width if right else rect.x + margin
+    y = rect.y + margin
+    rl.draw_rectangle_rounded(rl.Rectangle(x, y, width, h), 1., 16, rl.Color(color.r, color.g, color.b, 46))
+    rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(x, y, width, h), 1., 16, max(2., 0.03 * h), rl.Color(color.r, color.g, color.b, 170))
+    cx, cy = x + 0.62 * h, y + 0.5 * h
+    if icon == "mic":
+      # a microphone: the capsule, the cradle under it, and the stand
+      w = 0.2 * h * pulse
+      rl.draw_rectangle_rounded(rl.Rectangle(cx - w / 2, cy - 0.3 * h, w, 0.42 * h), 1., 12, color)
+      rl.draw_ring(rl.Vector2(cx, cy), 0.19 * h, 0.235 * h, 0., 180., 24, color)
+      rl.draw_line_ex(rl.Vector2(cx, cy + 0.21 * h), rl.Vector2(cx, cy + 0.33 * h), max(2., 0.045 * h), color)
+    else:
+      rl.draw_circle(int(cx), int(cy), 0.17 * h * pulse, color)
+    rl.draw_text_ex(font, text, rl.Vector2(x + 1.25 * h, cy - text_size.y / 2), int(0.5 * h), 0, rl.Color(255, 255, 255, 235))
+
+  def _draw_badges(self, rect: rl.Rectangle):
+    now = time.monotonic()
+    pulse = 0.5 - 0.5 * math.cos(2 * math.pi * now / 1.2)
+    # the microphone, whenever it is live, with what the body is doing about what it hears
+    if self._mic_live():
+      status = self._status_text if now < self._status_until else ""
+      self._draw_badge(rect, status or "mic on", rl.Color(*(STATUS_COLOR if status else MIC_COLOR)), False, "mic", 1. + (0.25 * pulse if status else 0.))
+    # someone is connected and can drive it and see through its camera
+    if self._teleop_connected:
+      self._draw_badge(rect, "connected", rl.Color(255, 70, 60, 255), True, "dot", 0.7 + 0.3 * pulse)
 
   def _handle_mouse_release(self, mouse_pos):
     super()._handle_mouse_release(mouse_pos)
@@ -343,11 +382,7 @@ class BodyLayout(Widget):
       shapes += charge_strip(self._smooth.aspect, self._battery, meter_color(self._battery))
     self._draw_shapes(rect, shapes)
 
-    if self._teleop_connected:
-      pulse = 0.7 + 0.3 * (0.5 - 0.5 * math.cos(2 * math.pi * time.monotonic() / 1.2))
-      rl.draw_circle(int(rect.x + rect.width - 0.09 * rect.height), int(rect.y + 0.09 * rect.height), 0.035 * rect.height * pulse, rl.Color(255, 60, 50, 255))
-    if self._mic_live():
-      rl.draw_circle(int(rect.x + 0.09 * rect.height), int(rect.y + 0.09 * rect.height), 0.03 * rect.height, rl.Color(*MIC_COLOR))
+    self._draw_badges(rect)
 
   def _render_overlay(self, rect: rl.Rectangle, overlay: face_command.Overlay):
     """A guide for someone standing in front of the body: which parts of the view are done, where to go next, and an outline."""
@@ -413,10 +448,4 @@ class BodyLayout(Widget):
       for dot, color in battery_meter(self._battery, now, now - self._plug_time):
         self.draw_dot_grid(rect, [dot], rl.Color(*color))
 
-    # pulsing red dot while someone is connected and driving
-    if self._teleop_connected:
-      pulse = 0.7 + 0.3 * (0.5 - 0.5 * math.cos(2 * math.pi * time.monotonic() / 1.2))
-      self.draw_dot_grid(rect, [(*LIVE_DOT, pulse)], rl.Color(255, 60, 50, 255))
-    # steady blue dot whenever the microphone is live
-    if self._mic_live():
-      self.draw_dot_grid(rect, [MIC_DOT], rl.Color(*MIC_COLOR))
+    self._draw_badges(rect)

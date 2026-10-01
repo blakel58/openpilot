@@ -31,6 +31,14 @@ standing in front of the body and needs to see what its camera sees (calibrating
   text      a line of text along the bottom
 The guide shows whether the body is awake or asleep, and goes away a second after the messages stop.
 
+A message can also set the word shown in the microphone badge, so whoever is talking to the body can
+see that it heard them and what it is doing about it:
+
+  {"status": {"text": "listening", "seconds": 3}}
+
+  text      a word or two (at most 16 characters); "" goes back to the plain badge
+  seconds   how long to show it (default 3, at most 15)
+
 From a shell on the device:
   python -m openpilot.selfdrive.ui.body.face_command surprised --seconds 2
   python -m openpilot.selfdrive.ui.body.face_command happy --look 0.5 0 --talking 0.7
@@ -126,6 +134,25 @@ def parse_overlay(data: bytes) -> Overlay | None:
   return overlay
 
 
+STATUS_SECONDS = 3.0
+MAX_STATUS_SECONDS = 15.0
+MAX_STATUS_CHARS = 16
+
+
+def parse_status(data: bytes) -> tuple[str, float] | None:
+  """Read a status word for the microphone badge: (text, seconds). Ignores anything malformed."""
+  if len(data) > MAX_BYTES:
+    return None
+  try:
+    raw = json.loads(data).get("status")
+  except (ValueError, AttributeError):
+    return None
+  if not isinstance(raw, dict) or not isinstance(raw.get("text"), str):
+    return None
+  text = "".join(c for c in raw["text"] if c.isalnum() or c in " .!?'")[:MAX_STATUS_CHARS]
+  return text, _number(raw.get("seconds", STATUS_SECONDS), 0.1, MAX_STATUS_SECONDS) or STATUS_SECONDS
+
+
 def _number(value, lo: float, hi: float) -> float | None:
   if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
     return None
@@ -185,7 +212,7 @@ def relay_stdin() -> None:
   pm = messaging.PubMaster([SERVICE])
   for line in sys.stdin.buffer:
     data = line.strip()
-    if parse(data) is None and parse_overlay(data) is None:
+    if parse(data) is None and parse_overlay(data) is None and parse_status(data) is None:
       continue
     msg = messaging.new_message(SERVICE, len(data))
     msg.customReservedRawData0 = data

@@ -313,3 +313,21 @@ class TestCharging(unittest.TestCase):
     # just plugged in: the bar hasn't filled in yet
     self.assertEqual(len([s for s in charge_panel(2.0, 0.55, green, None, now=0., plugged_for=0.) if s[0] == "rrect"]), 1)
     self.assertEqual([s[4] for s in charge_strip(2.0, 0.55, green) if s[0] == "text"], ["55%"])
+
+
+class TestStatus(unittest.TestCase):
+  def test_status_word(self):
+    self.assertEqual(face_command.parse_status(b'{"status": {"text": "listening", "seconds": 5}}'), ("listening", 5.))
+    self.assertEqual(face_command.parse_status(b'{"status": {"text": ""}}'), ("", face_command.STATUS_SECONDS))
+
+  def test_status_is_kept_short_and_plain(self):
+    text, seconds = face_command.parse_status(json.dumps({"status": {"text": "<b>way too long a status</b>", "seconds": 999}}).encode())
+    self.assertEqual(text, "bway too long a ")
+    self.assertEqual(seconds, face_command.MAX_STATUS_SECONDS)
+
+  def test_other_messages_are_not_status(self):
+    for data in (b"", b"nope", b'{"face": {"expression": "happy"}}', b'{"status": "listening"}', b'{"status": {"text": 5}}'):
+      self.assertIsNone(face_command.parse_status(data), data)
+    # and a status message is neither a face command nor a guide
+    self.assertIsNone(face_command.parse(b'{"status": {"text": "listening"}}'))
+    self.assertIsNone(face_command.parse_overlay(b'{"status": {"text": "listening"}}'))
