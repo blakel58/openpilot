@@ -16,7 +16,7 @@ from openpilot.selfdrive.ui.body.animations import FaceAnimator, ASLEEP, CONTENT
 from openpilot.selfdrive.ui.body import face_command
 from openpilot.selfdrive.ui.body.companion import companion
 from openpilot.selfdrive.ui.body.smooth_face import CHASE_SECONDS, ChargeEstimator, SmoothFace, asleep_hint, charge_panel, charge_strip, \
-                                                    chase_scene, format_eta_short, listening_shapes, thinking_look, thinking_shapes
+                                                    SIGNAL_Y, THINKING_LOOK, chase_scene, format_eta_short, listening_shapes, thinking_shapes
 
 GRID_COLS = 16
 GRID_ROWS = 8
@@ -80,6 +80,8 @@ class BodyLayout(Widget):
     self._face_cmd_until = 0.
     self._status_text = ""
     self._status_until = 0.
+    self._caption_text = ""
+    self._caption_until = 0.
     self._overlay: face_command.Overlay | None = None
     self._overlay_until = 0.
     self._charge_estimator = ChargeEstimator()
@@ -160,6 +162,9 @@ class BodyLayout(Widget):
       status = face_command.parse_status(data)
       if status is not None:
         self._status_text, self._status_until = status[0], time.monotonic() + status[1]
+      caption = face_command.parse_caption(data)
+      if caption is not None:
+        self._caption_text, self._caption_until = caption[0], time.monotonic() + caption[1]
       overlay = face_command.parse_overlay(data)
       if overlay is not None:
         self._overlay, self._overlay_until = overlay, time.monotonic() + face_command.OVERLAY_SECONDS
@@ -248,12 +253,18 @@ class BodyLayout(Widget):
     return sm.recv_frame['rawAudioData'] > 0 and (time.monotonic() - sm.recv_time['rawAudioData']) < MIC_TIMEOUT
 
   def _signal_shapes(self, now: float, aspect: float) -> list[tuple]:
+    shapes: list[tuple] = []
+    caption = self._caption_text if now < self._caption_until else ""
+    # with a caption along the bottom, the bars and dots move up to make room
+    y = SIGNAL_Y - 0.09 if caption else SIGNAL_Y
     signal = self._signal(now)
     if signal == "listening":
-      return listening_shapes(aspect, now)
-    if signal == "thinking":
-      return thinking_shapes(aspect, now)
-    return []
+      shapes += listening_shapes(aspect, now, y)
+    elif signal == "thinking":
+      shapes += thinking_shapes(aspect, now, y)
+    if caption:
+      shapes.append(("text", aspect / 2, 0.925, 0.085, caption, (255, 255, 255, 255), False))
+    return shapes
 
   def _draw_badge(self, rect: rl.Rectangle, text: str, color: rl.Color, right: bool, icon: str, pulse: float = 1.):
     """A labelled pill in a top corner: an icon and a word, so what it means doesn't have to be guessed."""
@@ -371,7 +382,8 @@ class BodyLayout(Widget):
       look = self._face_cmd.look if self._face_cmd is not None and now < self._face_cmd_until else None
       return {"expression": "surprised", "intensity": 0.55, "look": look or (0., -0.1), "speed": speed}
     if signal == "thinking":
-      return {"expression": "curious", "look": thinking_look(now), "speed": speed}
+      # calm: the eyes lift a little, and the dots under them do the moving
+      return {"expression": "normal", "look": THINKING_LOOK, "speed": speed}
     # something on the device is driving the face
     if self._face_cmd is not None and now < self._face_cmd_until:
       cmd = self._face_cmd
@@ -406,7 +418,7 @@ class BodyLayout(Widget):
         shapes += charge_panel(self._smooth.aspect, self._battery, meter_color(self._battery), self._charge_eta, now, now - self._plug_time)
       else:
         shapes += asleep_hint(self._smooth.aspect)
-    elif self._charging:
+    elif self._charging and not (self._caption_text and now < self._caption_until):
       shapes += charge_strip(self._smooth.aspect, self._battery, meter_color(self._battery))
     shapes += self._signal_shapes(now, self._smooth.aspect)
     self._draw_shapes(rect, shapes)

@@ -12,7 +12,7 @@ DESCRIPTIONS = {
     "What the comma body answers to when you talk to it. Short names with clear sounds are heard best."
   ),
   "TeachVoice": tr_noop(
-    "Teach the body how its name sounds when you say it. It beeps eight times: say its name once after each beep. " +
+    "Teach the body how its name sounds when you say it. It goes back to its face and beeps eight times: say its name once after each beep. " +
     "Needs drive mode, the microphone on, and a computer on your network running its voice programs."
   ),
   "BodyListening": tr_noop(
@@ -47,6 +47,7 @@ class BodyLayout(Widget):
     super().__init__()
     self._params = ui_state.params
     self._keyboard = Keyboard(max_text_size=MAX_NAME_LENGTH, min_text_size=2)
+    self._close_settings = None
 
     self._name_item = button_item(lambda: tr("Name"), lambda: tr("CHANGE"), DESCRIPTIONS["BodyName"], callback=self._on_change_name)
     self._name_item.action_item.set_value(companion.name)
@@ -62,6 +63,9 @@ class BodyLayout(Widget):
                                          callback=lambda state, p=param, r=needs_restart: self._on_toggle(p, state, r), icon=icon)
 
     self._scroller = Scroller([self._name_item, self._teach_item, *self._toggles.values()], line_separator=True, spacing=0)
+
+  def set_close_callback(self, close):
+    self._close_settings = close
 
   def show_event(self):
     super().show_event()
@@ -95,3 +99,6 @@ class BodyLayout(Widget):
 
   def _on_teach(self):
     companion.send_event("enroll")
+    # back to the face: it shows what to say and how each try went
+    if self._close_settings is not None:
+      self._close_settings()

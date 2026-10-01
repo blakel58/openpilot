@@ -39,6 +39,14 @@ see that it heard them and what it is doing about it:
   text      a word or two (at most 16 characters); "" goes back to the plain badge
   seconds   how long to show it (default 3, at most 15)
 
+And a caption: a line of text across the bottom of the face, for telling whoever is in front of it
+what to do next or how something went:
+
+  {"caption": {"text": "Say Roberto   3 of 8", "seconds": 6}}
+
+  text      up to 40 characters; "" removes it
+  seconds   how long to show it (default 3, at most 15)
+
 From a shell on the device:
   python -m openpilot.selfdrive.ui.body.face_command surprised --seconds 2
   python -m openpilot.selfdrive.ui.body.face_command happy --look 0.5 0 --talking 0.7
@@ -153,6 +161,23 @@ def parse_status(data: bytes) -> tuple[str, float] | None:
   return text, _number(raw.get("seconds", STATUS_SECONDS), 0.1, MAX_STATUS_SECONDS) or STATUS_SECONDS
 
 
+MAX_CAPTION_CHARS = 40
+
+
+def parse_caption(data: bytes) -> tuple[str, float] | None:
+  """Read a caption for the bottom of the face: (text, seconds). Ignores anything malformed."""
+  if len(data) > MAX_BYTES:
+    return None
+  try:
+    raw = json.loads(data).get("caption")
+  except (ValueError, AttributeError):
+    return None
+  if not isinstance(raw, dict) or not isinstance(raw.get("text"), str):
+    return None
+  text = "".join(c for c in raw["text"] if c.isalnum() or c in " .,!?'-:")[:MAX_CAPTION_CHARS]
+  return text, _number(raw.get("seconds", STATUS_SECONDS), 0.1, MAX_STATUS_SECONDS) or STATUS_SECONDS
+
+
 def _number(value, lo: float, hi: float) -> float | None:
   if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
     return None
@@ -212,7 +237,7 @@ def relay_stdin() -> None:
   pm = messaging.PubMaster([SERVICE])
   for line in sys.stdin.buffer:
     data = line.strip()
-    if parse(data) is None and parse_overlay(data) is None and parse_status(data) is None:
+    if all(read(data) is None for read in (parse, parse_overlay, parse_status, parse_caption)):
       continue
     msg = messaging.new_message(SERVICE, len(data))
     msg.customReservedRawData0 = data

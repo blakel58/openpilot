@@ -68,6 +68,8 @@ class SettingsLayout(Widget):
       PanelType.BODY: PanelInfo(tr_noop("Body"), BodyLayout()),
     }
 
+    self._panels[PanelType.BODY].instance.set_close_callback(lambda: self._close_callback() if self._close_callback else None)
+
     self._font_medium = gui_app.font(FontWeight.MEDIUM)
     self._close_icon = gui_app.texture("icons/close2.png", CLOSE_ICON_SIZE, CLOSE_ICON_SIZE)
 

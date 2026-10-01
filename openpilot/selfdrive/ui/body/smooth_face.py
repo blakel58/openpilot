@@ -401,9 +401,7 @@ def thinking_shapes(aspect: float, t: float, y: float = SIGNAL_Y) -> list[tuple]
   return shapes
 
 
-def thinking_look(t: float) -> tuple[float, float]:
-  """Where the eyes go while it thinks: up and off to one side, drifting slowly across."""
-  return 0.75 * math.sin(t * 0.9), -0.85
+THINKING_LOOK = (0., -0.6)   # where the eyes rest while it thinks: lifted a little, and still
 
 
 # --- the chase, in the smooth style ---

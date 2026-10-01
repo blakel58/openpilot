@@ -356,18 +356,33 @@ class TestCompanion(unittest.TestCase):
 
 class TestSignals(unittest.TestCase):
   def test_listening_and_thinking_stay_under_the_eyes(self):
-    from openpilot.selfdrive.ui.body.smooth_face import SIGNAL_Y, listening_shapes, thinking_look, thinking_shapes
+    from openpilot.selfdrive.ui.body.smooth_face import SIGNAL_Y, THINKING_LOOK, listening_shapes, thinking_shapes
     for t in (0., 0.3, 1.7, 12.4):
       bars, dots = listening_shapes(2., t), thinking_shapes(2., t)
       self.assertEqual((len(bars), len(dots)), (5, 3))
       for shape in bars + dots:
         self.assertAlmostEqual(shape[1], 1., delta=0.25)        # centred on the face
         self.assertAlmostEqual(shape[2], SIGNAL_Y, delta=0.08)  # below the eyes, above the bottom edge
-      x, y = thinking_look(t)
-      self.assertLessEqual(abs(x), 1.)
-      self.assertLess(y, -0.5)   # looking up
+    self.assertEqual(THINKING_LOOK[0], 0.)   # no wandering from side to side
+    self.assertLess(THINKING_LOOK[1], -0.3)  # looking up a little
 
   def test_they_move(self):
     from openpilot.selfdrive.ui.body.smooth_face import listening_shapes, thinking_shapes
     self.assertNotEqual(listening_shapes(2., 0.), listening_shapes(2., 0.2))
     self.assertNotEqual(thinking_shapes(2., 0.), thinking_shapes(2., 0.2))
+
+
+class TestCaption(unittest.TestCase):
+  def test_caption(self):
+    self.assertEqual(face_command.parse_caption(b'{"caption": {"text": "Say Roberto   3 of 8", "seconds": 6}}'), ("Say Roberto   3 of 8", 6.))
+    self.assertEqual(face_command.parse_caption(b'{"caption": {"text": ""}}'), ("", face_command.STATUS_SECONDS))
+
+  def test_caption_is_kept_short_and_plain(self):
+    text, seconds = face_command.parse_caption(json.dumps({"caption": {"text": "<script>" + "x" * 80, "seconds": 500}}).encode())
+    self.assertEqual(len(text), face_command.MAX_CAPTION_CHARS)
+    self.assertNotIn("<", text)
+    self.assertEqual(seconds, face_command.MAX_STATUS_SECONDS)
+
+  def test_other_messages_are_not_captions(self):
+    for data in (b"", b"nope", b'{"status": {"text": "listening"}}', b'{"caption": "hi"}', b'{"caption": {"text": 5}}'):
+      self.assertIsNone(face_command.parse_caption(data), data)
