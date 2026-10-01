@@ -1,3 +1,4 @@
+import random
 import time
 import pyray as rl
 
@@ -7,7 +8,8 @@ from openpilot.system.ui.lib.application import gui_app, FontWeight, TextAlignme
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.selfdrive.ui.ui_state import ui_state
-from openpilot.selfdrive.ui.body.animations import FaceAnimator, ASLEEP, BATTERY_METER, CONTENT, INQUISITIVE, LIVE_DOT, NORMAL, SLEEPY, TIRED, WINK
+from openpilot.selfdrive.ui.body.animations import FaceAnimator, ASLEEP, BATTERY_METER, CONTENT, INQUISITIVE, LIVE_DOT, NORMAL, \
+                                                     OFFROAD_SCENES, SLEEPY, TIRED, WINK, YAWN, duration
 
 GRID_COLS = 16
 GRID_ROWS = 8
@@ -19,6 +21,8 @@ IDLE_SPEED_THRESH = 0.01   # m/s — below this counts as no input
 LOW_BATTERY = 0.15         # fuelGauge below this looks tired
 TELEOP_TIMEOUT = 1.0       # seconds since the last joystick message before teleop counts as disconnected
 WINK_DURATION = 1.5        # seconds the wink plays when someone connects
+SCENE_FIRST_DELAY = 8.0    # seconds asleep before the first scene plays
+SCENE_GAP = (15.0, 25.0)   # seconds of plain sleep between scenes
 BODY_DATA_ADDR = 0x203     # BODY_DATA in comma_body.dbc, sent by the body at 1Hz even when offroad
 BODY_DATA_TIMEOUT = 5.0    # seconds before the last offroad battery reading is stale
 METER_GREEN = rl.Color(80, 220, 120, 255)
@@ -36,6 +40,9 @@ class BodyLayout(Widget):
     self._was_active = False
     self._teleop_connected = False
     self._wink_until = 0.
+    self._yawn_until = 0.
+    self._scene_index = 0
+    self._next_scene_time = 0.
     self._charging = False
     self._battery = 0.
     self._battery_time = 0.
@@ -83,13 +90,16 @@ class BodyLayout(Widget):
       if not self._was_active:
         self._last_input_time = time.monotonic()
         self._was_active = True
+        self._yawn_until = time.monotonic() + duration(YAWN)  # waking up
 
       cs = sm['carState']
       has_input = abs(cs.steeringAngleDeg) > IDLE_STEER_THRESH or abs(cs.vEgo) > IDLE_SPEED_THRESH
       if has_input:
         self._last_input_time = time.monotonic()
 
-      if time.monotonic() < self._wink_until:
+      if time.monotonic() < self._yawn_until:
+        self._animator.set_animation(YAWN)
+      elif time.monotonic() < self._wink_until:
         self._animator.set_animation(WINK)
       elif has_input:
         self._animator.set_animation(NORMAL)
@@ -102,8 +112,18 @@ class BodyLayout(Widget):
       else:
         self._animator.set_animation(NORMAL)
     else:
+      now = time.monotonic()
+      if self._was_active or self._next_scene_time == 0.:
+        self._next_scene_time = now + SCENE_FIRST_DELAY
       self._was_active = False
       self._animator.set_animation(ASLEEP)
+      # now and then, play a short scene. it starts right away from the still sleeping face,
+      # and the line above queues the sleeping face again for when it finishes
+      if now >= self._next_scene_time:
+        scene = OFFROAD_SCENES[self._scene_index % len(OFFROAD_SCENES)]
+        self._scene_index += 1
+        self._animator.set_animation(scene)
+        self._next_scene_time = now + duration(scene) + random.uniform(*SCENE_GAP)
 
     # someone is connected and driving (comma connect or local teleop both send testJoystick)
     teleop_connected = sm.recv_frame['testJoystick'] > 0 and (time.monotonic() - sm.recv_time['testJoystick']) < TELEOP_TIMEOUT

@@ -197,6 +197,92 @@ WINK = Animation(
 # shown (in red) while someone is connected and driving; a corner no face uses
 LIVE_DOT = (7, 15)
 
+# --- Scenes ---
+# short shows played now and then while the body sleeps. each starts and ends on a
+# frame the sleeping face can cut to, and plays forward once
+
+GRID_ROWS, GRID_COLS = 8, 16
+
+MOUTH_OPEN = [
+        (5, 7), (5, 8),
+(6, 6),                 (6, 9),
+        (7, 7), (7, 8),
+]
+
+# a tiny comma body: head, pole, wheels. two wheel poses so it looks like it's rolling
+_BODY_A = [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2), (2, 1), (3, 1), (4, 0), (4, 2)]
+_BODY_B = [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2), (2, 1), (3, 1), (4, 0), (4, 1), (4, 2)]
+_COMMA = [(0, 0), (0, 1), (1, 0), (1, 1), (2, 1), (3, 0)]
+
+
+def _place(dots: list[tuple[int, int]], rc: tuple[int, int]) -> list[tuple[int, int]]:
+  """Move a sprite and drop whatever falls off the grid."""
+  return [(r, c) for r, c in _shift(dots, rc) if 0 <= r < GRID_ROWS and 0 <= c < GRID_COLS]
+
+
+_SLEEP_FACE = _make_frame(EYE_CLOSED, _mirror(EYE_CLOSED), [], [], MOUTH_NORMAL)
+
+# bubbles drift up from the mouth
+_BUBBLE_PATH = [(6, 9), (5, 10), (4, 9), (3, 10)]
+SNORE = Animation(
+  frames=[_SLEEP_FACE] + [_SLEEP_FACE + [_BUBBLE_PATH[i % 4]] + ([_BUBBLE_PATH[(i + 2) % 4]] if i >= 2 else []) for i in range(12)] + [_SLEEP_FACE],
+  frame_duration=0.35,
+  mode=AnimationMode.ONCE_FORWARD,
+)
+
+# one eye opens, has a look around, and goes back to sleep
+PEEK = Animation(
+  frames=[
+    _SLEEP_FACE,
+    _make_frame(EYE_HALF, _mirror(EYE_CLOSED), [], [], MOUTH_NORMAL),
+    _make_frame(EYE_OPEN, _mirror(EYE_CLOSED), BROW_HIGH, [], MOUTH_NORMAL),
+    _make_frame(EYE_LEFT_LOOK, _mirror(EYE_CLOSED), BROW_HIGH, [], MOUTH_NORMAL),
+    _make_frame(EYE_LEFT_LOOK, _mirror(EYE_CLOSED), BROW_HIGH, [], MOUTH_NORMAL),
+    _make_frame(EYE_RIGHT_LOOK, _mirror(EYE_CLOSED), BROW_HIGH, [], MOUTH_NORMAL),
+    _make_frame(EYE_RIGHT_LOOK, _mirror(EYE_CLOSED), BROW_HIGH, [], MOUTH_NORMAL),
+    _make_frame(EYE_OPEN, _mirror(EYE_CLOSED), BROW_HIGH, [], MOUTH_NORMAL),
+    _make_frame(EYE_HALF, _mirror(EYE_CLOSED), BROW_LOWERED, [], MOUTH_NORMAL),
+    _SLEEP_FACE,
+  ],
+  frame_duration=0.3,
+  mode=AnimationMode.ONCE_FORWARD,
+)
+
+# the tiny body rolls across the screen
+_ROLL_FRAMES = [_place(_BODY_A if c % 2 else _BODY_B, (2, c)) for c in range(-3, GRID_COLS + 1)]
+ROLL = Animation(frames=_ROLL_FRAMES, frame_duration=0.16, mode=AnimationMode.ONCE_FORWARD)
+ROLL_BACK = Animation(frames=_ROLL_FRAMES[::-1], frame_duration=0.16, mode=AnimationMode.ONCE_FORWARD)
+
+# a comma hops across with the tiny body rolling after it
+CHASE = Animation(
+  frames=[_place(_COMMA, (2 if c % 2 else 1, c + 6)) + _place(_BODY_A if c % 2 else _BODY_B, (2, c)) for c in range(-9, GRID_COLS + 1)],
+  frame_duration=0.16,
+  mode=AnimationMode.ONCE_FORWARD,
+)
+
+# waking up into drive mode: a big yawn, ending on the normal face
+YAWN = Animation(
+  frames=[
+    _SLEEP_FACE,
+    _make_frame(EYE_CLOSED, _mirror(EYE_CLOSED), BROW_HIGH, _mirror(BROW_HIGH), MOUTH_OPEN),
+    _make_frame(EYE_CLOSED, _mirror(EYE_CLOSED), BROW_HIGH, _mirror(BROW_HIGH), MOUTH_OPEN),
+    _make_frame(EYE_CLOSED, _mirror(EYE_CLOSED), BROW_HIGH, _mirror(BROW_HIGH), MOUTH_OPEN),
+    _make_frame(EYE_HALF, _mirror(EYE_HALF), BROW_LOWERED, _mirror(BROW_LOWERED), MOUTH_NORMAL),
+    _make_frame(EYE_OPEN, _mirror(EYE_OPEN), BROW_HIGH, _mirror(BROW_HIGH), MOUTH_SMILE),
+  ],
+  frame_duration=0.3,
+  mode=AnimationMode.ONCE_FORWARD,
+)
+
+# played in this order, one at a time, while the body sleeps
+OFFROAD_SCENES = [SNORE, ROLL, PEEK, CHASE, SNORE, ROLL_BACK]
+
+
+def duration(animation: Animation) -> float:
+  """Seconds one forward pass of an animation takes."""
+  return len(animation.frames) * animation.frame_duration
+
+
 # battery meter shown (in green) above the face while charging; fills left to right
 BATTERY_METER = [(0, c) for c in range(4, 12)]
 
@@ -248,6 +334,9 @@ class FaceAnimator:
 
     if self._next is not None:
       if frame_index == 0 and (len(self._animation.frames) == 1 or self._seen_nonzero):
+        return self._switch_to_next(now, self._next)
+      # a play-once animation resting on its last frame is finished: hand over instead of rewinding
+      if self._animation.mode == AnimationMode.ONCE_FORWARD and frame_index == len(self._animation.frames) - 1:
         return self._switch_to_next(now, self._next)
       # No natural return to frame 0 — start rewinding
       if self._animation.mode in (AnimationMode.ONCE_FORWARD, AnimationMode.REPEAT_FORWARD):
