@@ -1,9 +1,14 @@
 """
 A second face for the comma body, drawn with smooth shapes instead of the dot grid.
 
-Everything here is plain math: given what the body is doing and how much time
-has passed, it works out a short list of shapes to draw. The layout draws them
-with raylib; nothing in this file touches the screen, so it can be tested and
+Two eyes and nothing else: the expression is all in their shape and how they move.
+Everything moves on springs, so it overshoots a little and settles rather than
+sliding, and the face keeps itself busy with blinks and glances when nothing is
+asking for its attention.
+
+Everything here is plain math: given what the body is doing and how much time has
+passed, it works out a short list of shapes to draw. The layout draws them with
+raylib; nothing in this file touches the screen, so it can be tested and
 previewed anywhere.
 
 All positions and sizes are in units of the screen height, with (0, 0) at the
@@ -14,114 +19,277 @@ import random
 from dataclasses import dataclass, field
 
 WHITE = (255, 255, 255, 255)
-TRACK = (255, 255, 255, 40)
+BLACK = (0, 0, 0, 255)
+TRACK = (255, 255, 255, 36)
+DIM_TEXT = (255, 255, 255, 150)
 
-# what each expression looks like: how open the eyes are (1 = fully open), how much
-# the mouth smiles (0 = flat line, 1 = big smile), and how far the eyes sit below their usual height
-EXPRESSIONS = {
-  "normal": {"open": 1.0, "smile": 0.4, "drop": 0.0},
-  "happy": {"open": 0.34, "smile": 1.0, "drop": -0.03},
-  "asleep": {"open": 0.06, "smile": 0.12, "drop": 0.04},
-}
+EYE_WIDTH = 0.28
+EYE_HEIGHT = 0.41
+EYE_RADIUS = 0.095
+EYE_SPACING = 0.32      # distance of each eye's center from the middle of the face
+EYE_Y = 0.47
+LOOK_X = 0.15           # how far the eyes travel when looking fully left/right
+LOOK_Y = 0.09
+LOOK_GROW = 0.10        # the eye on the side it's looking toward grows a little, like it's nearer
+CHEEK_RADIUS = 0.34     # the cheek that pushes up into a happy eye
+CLOSED_BELOW = 0.14     # below this openness an eye is drawn as a closed, curved line
+LID_THICKNESS = 0.03
 
-EYE_WIDTH = 0.26
-EYE_HEIGHT = 0.34
-EYE_SPACING = 0.34      # distance of each eye's center from the middle of the face
-EYE_Y = 0.46
-LOOK_X = 0.13           # how far the eyes travel when looking fully left/right
-LOOK_Y = 0.08
-MOUTH_Y = 0.80
-MOUTH_HALF_WIDTH = 0.10
-MOUTH_DEPTH = 0.075     # how far a full smile curves down
-MOUTH_THICKNESS = 0.022
+BLINK_TIME = 0.15       # seconds
+BLINK_GAP = (2.2, 6.0)  # seconds between blinks
+DOUBLE_BLINK_CHANCE = 0.25
+GLANCE_GAP = (2.5, 6.0)  # seconds between idle glances
+GLANCE_HOLD = (0.5, 1.3)
+BREATH_PERIOD = 4.2     # seconds per breath while asleep
+HAPPY_HOPS = 2
+HAPPY_HOP_TIME = 0.36   # seconds per hop
+CHARGING_EYE_LIFT = 0.19  # the eyes move up this far while the charging readout is showing
 
-EASE_RATE = 9.0         # 1/s: how quickly the face moves toward a new expression
-LOOK_RATE = 7.0
-BLINK_TIME = 0.16       # seconds
-BLINK_GAP = (2.0, 6.0)  # seconds between blinks
-BREATH_PERIOD = 4.0     # seconds per breath while asleep
-BOUNCE_TIME = 0.9       # seconds a happy bounce lasts
+
+@dataclass
+class Spring:
+  """A value that chases a target and overshoots a little, like it's on a spring."""
+  value: float = 0.
+  velocity: float = 0.
+  stiffness: float = 170.
+  damping: float = 17.
+
+  def step(self, target: float, dt: float) -> float:
+    # small fixed steps keep it stable when a frame takes long
+    steps = max(1, math.ceil(dt / 0.008))
+    h = dt / steps
+    for _ in range(steps):
+      self.velocity += (self.stiffness * (target - self.value) - self.damping * self.velocity) * h
+      self.value += self.velocity * h
+    return self.value
 
 
 @dataclass
 class SmoothFace:
   aspect: float = 2.0   # face area width / height
-  open: float = 0.06
-  smile: float = 0.12
-  drop: float = 0.04
-  look_x: float = 0.
-  look_y: float = 0.
   time: float = 0.
   expression: str = "asleep"
-  _next_blink: float = 3.0
-  _blink_start: float = -1.
-  _bounce_start: float = -10.
+  open: Spring = field(default_factory=lambda: Spring(0., stiffness=210., damping=17.))
+  happy: Spring = field(default_factory=lambda: Spring(0., stiffness=150., damping=15.))
+  look_x: Spring = field(default_factory=lambda: Spring(0., stiffness=230., damping=20.))
+  look_y: Spring = field(default_factory=lambda: Spring(0., stiffness=230., damping=20.))
+  focus: Spring = field(default_factory=lambda: Spring(0., stiffness=60., damping=14.))
+  lift: Spring = field(default_factory=lambda: Spring(0., stiffness=90., damping=15.))
   _rng: random.Random = field(default_factory=random.Random)
+  _blinks: list[float] = field(default_factory=list)       # start times of blinks under way
+  _next_blink: float = 2.5
+  _glance: tuple[float, float] = (0., 0.)
+  _glance_until: float = 0.
+  _next_glance: float = 3.0
+  _script: list[tuple[float, tuple[float, float]]] = field(default_factory=list)  # (until, look) steps, e.g. waking up
+  _happy_start: float = -10.
 
-  def update(self, dt: float, expression: str, look: tuple[float, float] = (0., 0.)) -> None:
-    """Move the face toward an expression and a look direction (each axis -1..1)."""
+  def update(self, dt: float, expression: str, look: tuple[float, float] | None = None, speed: float = 0., charging: bool = False) -> None:
+    """Advance the face.
+
+    expression: "normal", "happy" or "asleep"
+    look:       where something worth looking at is (each axis -1..1), or None to let the eyes wander on their own
+    speed:      0..1, how fast the body is driving; it narrows its eyes a little to concentrate
+    charging:   asleep on the charger: the eyes move up to make room for the charging readout
+    """
     self.time += dt
-    if expression == "happy" and self.expression != "happy":
-      self._bounce_start = self.time
-    self.expression = expression
-    target = EXPRESSIONS[expression]
-    k = 1. - math.exp(-EASE_RATE * dt)
-    self.open += (target["open"] - self.open) * k
-    self.smile += (target["smile"] - self.smile) * k
-    self.drop += (target["drop"] - self.drop) * k
+    now = self.time
+    if expression != self.expression:
+      if self.expression == "asleep":
+        # waking up: look one way, then the other, with a couple of blinks
+        self._script = [(now + 0.45, (0., 0.)), (now + 0.85, (-0.75, 0.1)), (now + 1.3, (0.75, 0.1)), (now + 1.5, (0., 0.))]
+        self._blinks = [now + 1.5, now + 1.78]
+        self._next_blink = now + 3.5
+        self._next_glance = now + 4.0
+      if expression == "happy":
+        self._happy_start = now
+      self.expression = expression
 
-    # asleep, the eyes rest in the middle
-    lx, ly = (0., 0.) if expression == "asleep" else (max(-1., min(1., look[0])), max(-1., min(1., look[1])))
-    k = 1. - math.exp(-LOOK_RATE * dt)
-    self.look_x += (lx - self.look_x) * k
-    self.look_y += (ly - self.look_y) * k
+    awake = expression != "asleep"
+    self.open.step((1. - 0.22 * max(0., min(1., speed))) if awake else 0., dt)
+    self.happy.step(1. if expression == "happy" else 0., dt)
+    self.focus.step(max(0., min(1., speed)), dt)
+    self.lift.step(CHARGING_EYE_LIFT if (charging and not awake) else 0., dt)
 
-    if expression == "normal" and self.time >= self._next_blink:
-      self._blink_start = self.time
-      self._next_blink = self.time + self._rng.uniform(*BLINK_GAP)
+    # where to look: a scripted move, then whatever was asked for, then an idle glance
+    self._script = [s for s in self._script if s[0] > now]
+    if not awake:
+      target = (0., 0.)
+    elif self._script:
+      target = self._script[0][1]
+    elif look is not None:
+      target = (max(-1., min(1., look[0])), max(-1., min(1., look[1])))
+      self._next_glance = now + self._rng.uniform(*GLANCE_GAP)
+    else:
+      if now >= self._next_glance:
+        self._glance = (self._rng.uniform(-0.8, 0.8), self._rng.uniform(-0.45, 0.35))
+        self._glance_until = now + self._rng.uniform(*GLANCE_HOLD)
+        self._next_glance = self._glance_until + self._rng.uniform(*GLANCE_GAP)
+      target = self._glance if now < self._glance_until else (0., 0.)
+    self.look_x.step(target[0], dt)
+    self.look_y.step(target[1], dt)
+
+    self._blinks = [b for b in self._blinks if now < b + BLINK_TIME]
+    if awake and expression != "happy" and now >= self._next_blink:
+      self._blinks.append(now)
+      if self._rng.random() < DOUBLE_BLINK_CHANCE:
+        self._blinks.append(now + BLINK_TIME * 1.7)
+      self._next_blink = now + self._rng.uniform(*BLINK_GAP)
 
   def _blink(self) -> float:
-    """1 = eyes as open as the expression allows, 0 = shut."""
-    t = (self.time - self._blink_start) / BLINK_TIME
-    return abs(2 * t - 1) if 0 <= t <= 1 else 1.
+    """1 = as open as it would otherwise be, 0 = shut."""
+    amount = 1.
+    for start in self._blinks:
+      t = (self.time - start) / BLINK_TIME
+      if 0 <= t <= 1:
+        amount = min(amount, abs(2 * t - 1))
+    return amount
+
+  def _hop(self) -> float:
+    """How far up the happy hops have the eyes right now (0..1)."""
+    t = (self.time - self._happy_start) / HAPPY_HOP_TIME
+    return abs(math.sin(math.pi * t)) * (1 - 0.35 * int(t)) if 0 <= t < HAPPY_HOPS else 0.
 
   def shapes(self) -> list[tuple]:
-    """The face as a list of shapes:
-         ("pill", center_x, center_y, width, height, color)
+    """The face as a list of shapes, in drawing order:
+         ("rrect", center_x, center_y, width, height, corner_radius, color)
+         ("circle", center_x, center_y, radius, color)
          ("stroke", [(x, y), ...], thickness, color)
     """
     cx = self.aspect / 2
-    eye_h = max(0.03, EYE_HEIGHT * self.open * self._blink())
-    y = EYE_Y + self.drop + self.look_y * LOOK_Y
-    if self.expression == "asleep":
-      y += 0.012 * math.sin(2 * math.pi * self.time / BREATH_PERIOD)
-    bounce = (self.time - self._bounce_start) / BOUNCE_TIME
-    if 0 <= bounce <= 1:
-      y -= 0.035 * abs(math.sin(2 * math.pi * bounce))
-    dx = self.look_x * LOOK_X
+    asleep = self.expression == "asleep"
+    openness = max(0., self.open.value) * self._blink()
+    happy = max(0., min(1.2, self.happy.value))
+    hop = self._hop()
+    breath = math.sin(2 * math.pi * self.time / BREATH_PERIOD) if asleep else 0.
 
-    shapes: list[tuple] = [
-      ("pill", cx - EYE_SPACING + dx, y, EYE_WIDTH, eye_h, WHITE),
-      ("pill", cx + EYE_SPACING + dx, y, EYE_WIDTH, eye_h, WHITE),
-    ]
-    # the mouth is a curve through three points; a little of the look carries into it
-    mx = cx + dx * 0.6
-    depth = MOUTH_DEPTH * self.smile
-    points = []
-    for i in range(13):
-      u = i / 12 * 2 - 1
-      points.append((mx + u * MOUTH_HALF_WIDTH, MOUTH_Y + depth * (1 - u * u)))
-    shapes.append(("stroke", points, MOUTH_THICKNESS, WHITE))
+    shapes: list[tuple] = []
+    for side in (-1, 1):
+      # the eye it's looking toward is a touch bigger, and the pair slides that way
+      grow = 1. + LOOK_GROW * self.look_x.value * side
+      x = cx + side * EYE_SPACING + self.look_x.value * LOOK_X
+      y = EYE_Y + self.look_y.value * LOOK_Y - 0.05 * hop - 0.012 * happy + 0.012 * breath - self.lift.value
+
+      if openness < CLOSED_BELOW:
+        # shut: a gentle downward curve, like a closed eyelid
+        w = EYE_WIDTH * 0.92 * (1. + 0.03 * breath)
+        sag = 0.035 * (1. - openness / CLOSED_BELOW) + 0.004
+        points = [(x + u * w / 2, y + sag * (1 - u * u)) for u in (i / 8 * 2 - 1 for i in range(9))]
+        shapes.append(("stroke", points, LID_THICKNESS, WHITE))
+        continue
+
+      # squash and stretch: a closing eye gets wider, a hopping eye gets taller
+      squash = 1. - min(1., openness)
+      w = EYE_WIDTH * grow * (1. + 0.16 * squash + 0.06 * happy - 0.05 * hop)
+      h = EYE_HEIGHT * grow * min(1.12, openness) * (1. + 0.08 * hop)
+      shapes.append(("rrect", x, y, w, h, min(EYE_RADIUS * grow, h / 2, w / 2), WHITE))
+      if happy > 0.02:
+        # a cheek pushes up from below and turns the eye into an arch
+        cover = 0.58 * min(1., happy) * h
+        shapes.append(("circle", x, y + h / 2 - cover + CHEEK_RADIUS, CHEEK_RADIUS, BLACK))
     return shapes
 
 
-def charge_bar(aspect: float, level: float, color: tuple[int, int, int, int]) -> list[tuple]:
-  """A plain charge bar under the sleeping face: a track and the filled part."""
-  width, height, y = 0.9, 0.045, 0.925
-  x0 = aspect / 2 - width / 2
+# --- charging ---
+
+@dataclass
+class ChargeEstimator:
+  """Works out how long until the battery is full from how fast its level is rising.
+
+  The body reports whole percents, so the rate comes from the times at which the
+  level ticks up. The first reading after plugging in is ignored for timing: the
+  level jumps when the charger connects, and how long it had been at that value is unknown.
+  """
+  MIN_SPAN = 90.  # seconds of rise to watch before trusting the rate
+
+  _ticks: list[tuple[float, float]] = field(default_factory=list)  # (time, level) each time the level went up
+  _last_level: float | None = None
+
+  def update(self, now: float, level: float, charging: bool) -> float | None:
+    """Returns seconds until full, or None while it doesn't know yet."""
+    if not charging:
+      self._ticks, self._last_level = [], None
+      return None
+    if self._last_level is None:
+      self._last_level = level
+    elif level > self._last_level + 1e-6:
+      self._ticks.append((now, level))
+      self._last_level = level
+    elif level < self._last_level - 0.03:
+      # the level dropped (it's being used hard while plugged in); start over
+      self._ticks, self._last_level = [], level
+    if level >= 0.995:
+      return 0.
+    if len(self._ticks) < 2 or self._ticks[-1][0] - self._ticks[0][0] < self.MIN_SPAN:
+      return None
+    rate = (self._ticks[-1][1] - self._ticks[0][1]) / (self._ticks[-1][0] - self._ticks[0][0])
+    return (1. - level) / rate if rate > 0 else None
+
+
+def asleep_hint(aspect: float) -> list[tuple]:
+  """What to do to wake it, under the sleeping eyes."""
+  return [("text", aspect / 2, 0.86, 0.062, "switch to drive mode to use", DIM_TEXT, False)]
+
+
+def format_eta_short(seconds: float | None) -> str:
+  """For the dot face's one-line label: "" until it knows."""
+  if seconds is None:
+    return ""
+  return "full" if seconds <= 0 else format_eta(seconds).removeprefix("about ").replace(" to full", " left")
+
+
+def format_eta(seconds: float | None) -> str:
+  if seconds is None:
+    return "working out time left"
+  if seconds <= 0:
+    return "fully charged"
+  minutes = max(1, round(seconds / 60 / 5) * 5) if seconds > 600 else max(1, round(seconds / 60))
+  if minutes >= 60:
+    hours, rest = divmod(minutes, 60)
+    return f"about {hours} h {rest} min to full" if rest else f"about {hours} h to full"
+  return f"about {minutes} min to full"
+
+
+def charge_panel(aspect: float, level: float, color: tuple[int, int, int, int], eta: float | None, now: float, plugged_for: float) -> list[tuple]:
+  """The charging readout under the sleeping eyes: a big percentage, a bar, and the time left.
+
+  Adds one more shape kind:
+    ("text", center_x, center_y, height, string, color, bold)
+  """
   level = max(0., min(1., level))
-  shapes = [("pill", aspect / 2, y, width, height, TRACK)]
+  cx = aspect / 2
+  width, height, y = 0.86, 0.05, 0.80
+  x0 = cx - width / 2
+  # the bar fills up from empty when the charger goes in
+  shown = level * min(1., plugged_for / 0.9) ** 0.5
+  shapes: list[tuple] = [
+    ("text", cx, 0.655, 0.17, f"{round(level * 100)}%", WHITE, True),
+    ("rrect", cx, y, width, height, height / 2, TRACK),
+  ]
+  if shown > 0.01:
+    filled = max(height, width * shown)
+    shapes.append(("rrect", x0 + filled / 2, y, filled, height, height / 2, color))
+    # a highlight sweeps along the filled part, like charge flowing in
+    sweep = (now % 2.2) / 2.2
+    glint_w = 0.11
+    gx = x0 + sweep * (filled + glint_w) - glint_w / 2
+    left, right = max(x0, gx - glint_w / 2), min(x0 + filled, gx + glint_w / 2)
+    if right - left > height:
+      shapes.append(("rrect", (left + right) / 2, y, right - left, height, height / 2, (255, 255, 255, 70)))
+  shapes.append(("text", cx, 0.905, 0.058, format_eta(eta), DIM_TEXT, False))
+  return shapes
+
+
+
+def charge_strip(aspect: float, level: float, color: tuple[int, int, int, int]) -> list[tuple]:
+  """A small bar and percentage along the bottom, for when it's awake and on the charger."""
+  level = max(0., min(1., level))
+  cx = aspect / 2
+  width, height, y = 0.5, 0.03, 0.93
+  x0 = cx - width / 2
+  shapes: list[tuple] = [("rrect", cx, y, width, height, height / 2, TRACK)]
   if level > 0.02:
     filled = max(height, width * level)
-    shapes.append(("pill", x0 + filled / 2, y, filled, height, color))
+    shapes.append(("rrect", x0 + filled / 2, y, filled, height, height / 2, color))
+  shapes.append(("text", cx + width / 2 + 0.09, y, 0.055, f"{round(level * 100)}%", DIM_TEXT, False))
   return shapes

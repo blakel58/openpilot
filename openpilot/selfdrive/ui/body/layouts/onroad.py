@@ -6,13 +6,14 @@ import pyray as rl
 import openpilot.cereal.messaging as messaging
 
 from openpilot.system.ui.lib.application import gui_app, FontWeight, TextAlignment, TextAlignmentVertical
+from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.selfdrive.ui.ui_state import device, ui_state
 from openpilot.selfdrive.ui.body.animations import FaceAnimator, ASLEEP, CONTENT, DIZZY, FOCUSED, HAPPY, INQUISITIVE, LIVE_DOT, NORMAL, \
                                                      OFFROAD_SCENES, SLEEPY, SMOOTH_FACE_SCENES, SURPRISED, TIRED, WINK, YAWN, battery_meter, \
                                                      duration, meter_color
-from openpilot.selfdrive.ui.body.smooth_face import SmoothFace, charge_bar
+from openpilot.selfdrive.ui.body.smooth_face import ChargeEstimator, SmoothFace, asleep_hint, charge_panel, charge_strip, format_eta_short
 
 GRID_COLS = 16
 GRID_ROWS = 8
@@ -30,6 +31,7 @@ SCENE_GAP = (4.0, 8.0)     # seconds of plain sleep between scenes
 BODY_DATA_ADDR = 0x203     # BODY_DATA in comma_body.dbc, sent by the body at 1Hz even when offroad
 BODY_DATA_TIMEOUT = 5.0    # seconds before the last offroad battery reading is stale
 FAST_SPEED = 0.45          # m/s — above this the face concentrates
+FULL_SPEED = 0.8           # m/s at full stick
 SPIN_STEER = 0.5           # joystick turn axis beyond this, while barely moving, counts as spinning in place
 SPIN_SPEED = 0.15          # m/s
 SPIN_TIME = 3.0            # seconds of spinning before it gets dizzy
@@ -64,6 +66,8 @@ class BodyLayout(Widget):
     self._smooth_checked = 0.
     self._smooth_time = time.monotonic()
     self._touch: tuple[float, float] | None = None
+    self._charge_estimator = ChargeEstimator()
+    self._charge_eta: float | None = None
     self._charging = False
     self._battery = 0.
     self._battery_time = 0.
@@ -102,6 +106,8 @@ class BodyLayout(Widget):
           self._charging, self._battery, self._battery_time = bool(c.dat[3] & 1), (c.dat[3] >> 1) / 100., now
     if now - self._battery_time > BODY_DATA_TIMEOUT:
       self._charging = False
+
+    self._charge_eta = self._charge_estimator.update(now, self._battery, self._charging)
 
     if self._charging != was_charging:
       if self._charging:
@@ -203,8 +209,9 @@ class BodyLayout(Widget):
     else:
       self._react(HAPPY)  # a pat on the head
 
-  def _look_target(self, rect: rl.Rectangle) -> tuple[float, float]:
-    """Where the smooth face looks: at a finger on the screen, into a turn, or at a face it can see."""
+  def _look_target(self, rect: rl.Rectangle) -> tuple[float, float] | None:
+    """Where the smooth face looks: at a finger on the screen, into a turn, or at a face it can see.
+    None lets the eyes wander on their own."""
     if self._touch is not None:
       return (2 * (self._touch[0] - rect.x) / rect.width - 1, 2 * (self._touch[1] - rect.y) / rect.height - 1)
     if self._turning_left or self._turning_right:
@@ -214,7 +221,33 @@ class BodyLayout(Widget):
       if driver.faceProb > FACE_PROB_THRESH and len(driver.facePosition) >= 2:
         # TODO: check the signs on the body; the driver camera is the body's front camera
         return (-4 * driver.facePosition[0], 4 * driver.facePosition[1])
-    return (0., 0.)
+    return None
+
+  def _draw_shapes(self, rect: rl.Rectangle, shapes: list[tuple]):
+    """Draw smooth face shapes; they're in units of the face area's height."""
+    u = rect.height
+    for shape in shapes:
+      kind = shape[0]
+      if kind == "rrect":
+        _, cx, cy, w, h, radius, color = shape
+        r = rl.Rectangle(rect.x + (cx - w / 2) * u, rect.y + (cy - h / 2) * u, w * u, h * u)
+        # raylib's roundness is the corner radius as a fraction of half the shorter side
+        rl.draw_rectangle_rounded(r, min(1., 2 * radius / max(min(w, h), 1e-6)), 24, rl.Color(*color))
+      elif kind == "circle":
+        _, cx, cy, radius, color = shape
+        rl.draw_circle_v(rl.Vector2(rect.x + cx * u, rect.y + cy * u), radius * u, rl.Color(*color))
+      elif kind == "stroke":
+        _, points, thickness, color = shape
+        pts = [rl.Vector2(rect.x + x * u, rect.y + y * u) for x, y in points]
+        for a, b in zip(pts, pts[1:], strict=False):
+          rl.draw_line_ex(a, b, thickness * u, rl.Color(*color))
+        for pt in pts:
+          rl.draw_circle_v(pt, thickness * u / 2, rl.Color(*color))
+      elif kind == "text":
+        _, cx, cy, height, string, color, bold = shape
+        font = gui_app.font(FontWeight.BOLD if bold else FontWeight.MEDIUM)
+        size = measure_text_cached(font, string, int(height * u))
+        rl.draw_text_ex(font, string, rl.Vector2(rect.x + cx * u - size.x / 2, rect.y + cy * u - size.y / 2), int(height * u), 0, rl.Color(*color))
 
   def _render_smooth(self, rect: rl.Rectangle):
     now = time.monotonic()
@@ -225,29 +258,20 @@ class BodyLayout(Widget):
       expression = "happy"
     else:
       expression = "normal"
+    speed = abs(ui_state.sm['carState'].vEgo) / FULL_SPEED if ui_state.is_onroad() else 0.
     self._smooth.aspect = rect.width / rect.height
-    self._smooth.update(dt, expression, self._look_target(rect))
+    self._smooth.update(dt, expression, self._look_target(rect), speed, charging=self._charging)
 
     shapes = self._smooth.shapes()
-    if self._charging:
-      shapes += charge_bar(self._smooth.aspect, self._battery, meter_color(self._battery))
-    for shape in shapes:
-      if shape[0] == "pill":
-        _, cx, cy, w, h, color = shape
-        r = rl.Rectangle(rect.x + (cx - w / 2) * rect.height, rect.y + (cy - h / 2) * rect.height, w * rect.height, h * rect.height)
-        rl.draw_rectangle_rounded(r, 1.0, 24, rl.Color(*color))
-      elif shape[0] == "stroke":
-        _, points, thickness, color = shape
-        pts = [rl.Vector2(rect.x + x * rect.height, rect.y + y * rect.height) for x, y in points]
-        for a, b in zip(pts, pts[1:], strict=False):
-          rl.draw_line_ex(a, b, thickness * rect.height, rl.Color(*color))
-        for pt in pts:
-          rl.draw_circle_v(pt, thickness * rect.height / 2, rl.Color(*color))
-
     if ui_state.is_offroad():
-      upper_half = rl.Rectangle(rect.x, rect.y, rect.width, rect.height / 2)
-      self._offroad_label.set_text(f"charging {round(self._battery * 100)}%" if self._charging else "switch to drive mode to use")
-      self._offroad_label.render(upper_half)
+      if self._charging:
+        shapes += charge_panel(self._smooth.aspect, self._battery, meter_color(self._battery), self._charge_eta, now, now - self._plug_time)
+      else:
+        shapes += asleep_hint(self._smooth.aspect)
+    elif self._charging:
+      shapes += charge_strip(self._smooth.aspect, self._battery, meter_color(self._battery))
+    self._draw_shapes(rect, shapes)
+
     if self._teleop_connected:
       pulse = 0.7 + 0.3 * (0.5 - 0.5 * math.cos(2 * math.pi * time.monotonic() / 1.2))
       rl.draw_circle(int(rect.x + rect.width - 0.09 * rect.height), int(rect.y + 0.09 * rect.height), 0.035 * rect.height * pulse, rl.Color(255, 60, 50, 255))
@@ -271,11 +295,14 @@ class BodyLayout(Widget):
     if ui_state.is_offroad() and animation not in OFFROAD_SCENES:
       rl.draw_rectangle(int(self.rect.x), int(self.rect.y), int(self.rect.width), int(self.rect.height), rl.Color(0, 0, 0, 175))
       upper_half = rl.Rectangle(rect.x, rect.y, rect.width, rect.height / 2)
-      self._offroad_label.set_text(f"charging {round(self._battery * 100)}%" if self._charging else "switch to drive mode to use")
+      eta = format_eta_short(self._charge_eta)
+      charging_text = f"charging {round(self._battery * 100)}%" + (f" · {eta}" if eta else "")
+      self._offroad_label.set_text(charging_text if self._charging else "switch to drive mode to use")
       self._offroad_label.render(upper_half)
 
-    # charge meter above the face. drawn after the dimming so it stays bright over the sleeping face
-    if self._charging:
+    # charge meter above the face. drawn after the dimming so it stays bright over the sleeping face.
+    # (the smooth face has its own charging readout, so its scenes play without the dot meter)
+    if self._charging and not self._smooth_enabled:
       now = time.monotonic()
       for dot, color in battery_meter(self._battery, now, now - self._plug_time):
         self.draw_dot_grid(rect, [dot], rl.Color(*color))
