@@ -192,14 +192,15 @@ class Handler(BaseHTTPRequestHandler):
 
   def do_GET(self):
     ros = self.server.ros
-    if self.path in ("/", "/index.html"):
+    path = self.path.split("?", 1)[0]  # the page adds a timestamp to /video so the browser doesn't reuse an old stream
+    if path in ("/", "/index.html"):
       with open(os.path.join(TELEOPDIR, "static", "index.html"), "rb") as f:
         self._send(200, f.read(), "text/html; charset=utf-8")
-    elif self.path == "/mode":
+    elif path == "/mode":
       self._send(200, json.dumps({"mode": "ros" if ros is not None else "webrtc", "host": ros.host if ros is not None else ""}).encode(), "application/json")
-    elif self.path == "/status" and ros is not None:
+    elif path == "/status" and ros is not None:
       self._send(200, json.dumps({**ros.status, "frames": ros.frame_id}).encode(), "application/json")
-    elif self.path == "/video" and ros is not None:
+    elif path == "/video" and ros is not None:
       ros._ensure()
       self.send_response(200)
       self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
