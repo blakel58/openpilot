@@ -7,7 +7,7 @@ import openpilot.cereal.messaging as messaging
 from openpilot.system.ui.lib.application import gui_app, FontWeight, TextAlignment, TextAlignmentVertical
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.label import UnifiedLabel
-from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.selfdrive.ui.ui_state import device, ui_state
 from openpilot.selfdrive.ui.body.animations import FaceAnimator, ASLEEP, BATTERY_METER, CONTENT, INQUISITIVE, LIVE_DOT, NORMAL, \
                                                      OFFROAD_SCENES, SLEEPY, TIRED, WINK, YAWN, duration
 
@@ -21,8 +21,9 @@ IDLE_SPEED_THRESH = 0.01   # m/s — below this counts as no input
 LOW_BATTERY = 0.15         # fuelGauge below this looks tired
 TELEOP_TIMEOUT = 1.0       # seconds since the last joystick message before teleop counts as disconnected
 WINK_DURATION = 1.5        # seconds the wink plays when someone connects
-SCENE_FIRST_DELAY = 8.0    # seconds asleep before the first scene plays
-SCENE_GAP = (15.0, 25.0)   # seconds of plain sleep between scenes
+# offroad the screen only stays on for 30s after a touch, so scenes are timed from when it wakes
+SCENE_FIRST_DELAY = 2.0    # seconds after the screen wakes before the first scene plays
+SCENE_GAP = (4.0, 8.0)     # seconds of plain sleep between scenes
 BODY_DATA_ADDR = 0x203     # BODY_DATA in comma_body.dbc, sent by the body at 1Hz even when offroad
 BODY_DATA_TIMEOUT = 5.0    # seconds before the last offroad battery reading is stale
 METER_GREEN = rl.Color(80, 220, 120, 255)
@@ -43,6 +44,9 @@ class BodyLayout(Widget):
     self._yawn_until = 0.
     self._scene_index = 0
     self._next_scene_time = 0.
+    self._was_awake = False
+    self._scene = ASLEEP
+    self._scene_until = 0.
     self._charging = False
     self._battery = 0.
     self._battery_time = 0.
@@ -113,17 +117,19 @@ class BodyLayout(Widget):
         self._animator.set_animation(NORMAL)
     else:
       now = time.monotonic()
-      if self._was_active or self._next_scene_time == 0.:
+      if self._was_active or (device.awake and not self._was_awake):
         self._next_scene_time = now + SCENE_FIRST_DELAY
       self._was_active = False
-      self._animator.set_animation(ASLEEP)
-      # now and then, play a short scene. it starts right away from the still sleeping face,
-      # and the line above queues the sleeping face again for when it finishes
-      if now >= self._next_scene_time:
-        scene = OFFROAD_SCENES[self._scene_index % len(OFFROAD_SCENES)]
+      # now and then, play a short scene, then go back to the sleeping face
+      if device.awake and now >= self._next_scene_time:
+        self._scene = OFFROAD_SCENES[self._scene_index % len(OFFROAD_SCENES)]
         self._scene_index += 1
-        self._animator.set_animation(scene)
-        self._next_scene_time = now + duration(scene) + random.uniform(*SCENE_GAP)
+        self._scene_until = now + duration(self._scene)
+        self._next_scene_time = self._scene_until + random.uniform(*SCENE_GAP)
+      # keep asking for the scene until it's done: asking for another animation mid-play rewinds it
+      self._animator.set_animation(self._scene if now < self._scene_until else ASLEEP)
+
+    self._was_awake = device.awake
 
     # someone is connected and driving (comma connect or local teleop both send testJoystick)
     teleop_connected = sm.recv_frame['testJoystick'] > 0 and (time.monotonic() - sm.recv_time['testJoystick']) < TELEOP_TIMEOUT
@@ -157,7 +163,9 @@ class BodyLayout(Widget):
       self.draw_dot_grid(rect, [LIVE_DOT], rl.Color(255, 60, 50, 255))
 
     if ui_state.is_offroad():
-      rl.draw_rectangle(int(self.rect.x), int(self.rect.y), int(self.rect.width), int(self.rect.height), rl.Color(0, 0, 0, 175))
+      # the sleeping face is dimmed behind the text; scenes play at full brightness
+      if animation not in OFFROAD_SCENES:
+        rl.draw_rectangle(int(self.rect.x), int(self.rect.y), int(self.rect.width), int(self.rect.height), rl.Color(0, 0, 0, 175))
       upper_half = rl.Rectangle(rect.x, rect.y, rect.width, rect.height / 2)
       self._offroad_label.set_text(f"charging {round(self._battery * 100)}%" if self._charging else "switch to drive mode to use")
       self._offroad_label.render(upper_half)

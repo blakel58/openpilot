@@ -249,13 +249,13 @@ PEEK = Animation(
 )
 
 # the tiny body rolls across the screen
-_ROLL_FRAMES = [_place(_BODY_A if c % 2 else _BODY_B, (2, c)) for c in range(-3, GRID_COLS + 1)]
+_ROLL_FRAMES = [_place(_BODY_A if c % 2 else _BODY_B, (3, c)) for c in range(-3, GRID_COLS + 1)]
 ROLL = Animation(frames=_ROLL_FRAMES, frame_duration=0.16, mode=AnimationMode.ONCE_FORWARD)
 ROLL_BACK = Animation(frames=_ROLL_FRAMES[::-1], frame_duration=0.16, mode=AnimationMode.ONCE_FORWARD)
 
 # a comma hops across with the tiny body rolling after it
 CHASE = Animation(
-  frames=[_place(_COMMA, (2 if c % 2 else 1, c + 6)) + _place(_BODY_A if c % 2 else _BODY_B, (2, c)) for c in range(-9, GRID_COLS + 1)],
+  frames=[_place(_COMMA, (3 if c % 2 else 2, c + 6)) + _place(_BODY_A if c % 2 else _BODY_B, (3, c)) for c in range(-9, GRID_COLS + 1)],
   frame_duration=0.16,
   mode=AnimationMode.ONCE_FORWARD,
 )
@@ -275,7 +275,7 @@ YAWN = Animation(
 )
 
 # played in this order, one at a time, while the body sleeps
-OFFROAD_SCENES = [SNORE, ROLL, PEEK, CHASE, SNORE, ROLL_BACK]
+OFFROAD_SCENES = [ROLL, PEEK, CHASE, SNORE, ROLL_BACK, PEEK]
 
 
 def duration(animation: Animation) -> float:

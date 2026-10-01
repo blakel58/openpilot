@@ -1,3 +1,4 @@
+import time
 import unittest
 
 from openpilot.selfdrive.ui.body import animations
@@ -15,7 +16,8 @@ class TestBodyAnimations(unittest.TestCase):
       for frame in anim.frames + (anim.starting_frames or []):
         assert all(0 <= r < GRID_ROWS and 0 <= c < GRID_COLS for r, c in frame), name
         # the live indicator must never be mistaken for part of a face
-        assert LIVE_DOT not in frame, name
+        # (scenes roll along the bottom row; they only play asleep, and the red dot draws on top anyway)
+        assert anim in OFFROAD_SCENES or LIVE_DOT not in frame, name
         assert not set(BATTERY_METER) & set(frame), name
 
   def test_scenes_hand_back_to_the_sleeping_face(self):
@@ -33,3 +35,15 @@ class TestBodyAnimations(unittest.TestCase):
 
   def test_yawn_ends_on_the_normal_face(self):
     assert YAWN.frames[-1] == NORMAL.frames[0]
+
+  def test_held_scene_plays_every_frame(self):
+    # the layout keeps asking for the scene while it plays; asking for the sleeping face mid-play would rewind it
+    for scene in OFFROAD_SCENES:
+      animator = FaceAnimator(ASLEEP)
+      animator.set_animation(scene)
+      animator.get_dots()
+      for i in range(len(scene.frames)):
+        animator._start_time = time.monotonic() - (i + 0.5) * scene.frame_duration
+        animator.set_animation(scene)
+        assert animator.get_dots() == scene.frames[i]
+        assert animator._animation is scene and not animator._rewinding
