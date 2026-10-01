@@ -209,9 +209,16 @@ MOUTH_OPEN = [
         (7, 7), (7, 8),
 ]
 
-# a tiny comma body: head, pole, wheels. two wheel poses so it looks like it's rolling
-_BODY_A = [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2), (2, 1), (3, 1), (4, 0), (4, 2)]
-_BODY_B = [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2), (2, 1), (3, 1), (4, 0), (4, 1), (4, 2)]
+# a tiny comma body rolling to the right: head, pole and wheel base. like the real one,
+# it leans into the direction it's driving
+_BODY_RIGHT = [
+        (0, 1), (0, 2), (0, 3),
+        (1, 1), (1, 2), (1, 3),
+                (2, 2),
+        (3, 1),
+(4, 0), (4, 1), (4, 2),
+]
+_BODY_LEFT = [(r, 3 - c) for r, c in _BODY_RIGHT]
 _COMMA = [(0, 0), (0, 1), (1, 0), (1, 1), (2, 1), (3, 0)]
 
 
@@ -222,11 +229,14 @@ def _place(dots: list[tuple[int, int]], rc: tuple[int, int]) -> list[tuple[int, 
 
 _SLEEP_FACE = _make_frame(EYE_CLOSED, _mirror(EYE_CLOSED), [], [], MOUTH_NORMAL)
 
-# bubbles drift up from the mouth
-_BUBBLE_PATH = [(6, 9), (5, 10), (4, 9), (3, 10)]
+# slow breathing: the face rises as it breathes in, and a "z" drifts off as it breathes out
+_SLEEP_FACE_UP = _shift(_SLEEP_FACE, (-1, 0))
+_Z = [(0, 0), (0, 1), (0, 2), (1, 1), (2, 0), (2, 1), (2, 2)]
+_SLEEP_FACE_Z = _SLEEP_FACE + _place(_Z, (0, 13))
+_BREATH = [_SLEEP_FACE_UP, _SLEEP_FACE_UP, _SLEEP_FACE_Z, _SLEEP_FACE_Z, _SLEEP_FACE]
 SNORE = Animation(
-  frames=[_SLEEP_FACE] + [_SLEEP_FACE + [_BUBBLE_PATH[i % 4]] + ([_BUBBLE_PATH[(i + 2) % 4]] if i >= 2 else []) for i in range(12)] + [_SLEEP_FACE],
-  frame_duration=0.35,
+  frames=[_SLEEP_FACE] + _BREATH * 3,
+  frame_duration=0.5,
   mode=AnimationMode.ONCE_FORWARD,
 )
 
@@ -249,14 +259,13 @@ PEEK = Animation(
 )
 
 # the tiny body rolls across the screen
-_ROLL_FRAMES = [_place(_BODY_A if c % 2 else _BODY_B, (3, c)) for c in range(-3, GRID_COLS + 1)]
-ROLL = Animation(frames=_ROLL_FRAMES, frame_duration=0.16, mode=AnimationMode.ONCE_FORWARD)
-ROLL_BACK = Animation(frames=_ROLL_FRAMES[::-1], frame_duration=0.16, mode=AnimationMode.ONCE_FORWARD)
+ROLL = Animation(frames=[_place(_BODY_RIGHT, (3, c)) for c in range(-4, GRID_COLS + 1)], frame_duration=0.2, mode=AnimationMode.ONCE_FORWARD)
+ROLL_BACK = Animation(frames=[_place(_BODY_LEFT, (3, c)) for c in range(GRID_COLS, -5, -1)], frame_duration=0.2, mode=AnimationMode.ONCE_FORWARD)
 
 # a comma hops across with the tiny body rolling after it
 CHASE = Animation(
-  frames=[_place(_COMMA, (3 if c % 2 else 2, c + 6)) + _place(_BODY_A if c % 2 else _BODY_B, (3, c)) for c in range(-9, GRID_COLS + 1)],
-  frame_duration=0.16,
+  frames=[_place(_COMMA, (3 if c % 2 else 2, c + 7)) + _place(_BODY_RIGHT, (3, c)) for c in range(-10, GRID_COLS + 1)],
+  frame_duration=0.24,
   mode=AnimationMode.ONCE_FORWARD,
 )
 

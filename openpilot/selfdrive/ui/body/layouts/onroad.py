@@ -52,7 +52,7 @@ class BodyLayout(Widget):
     self._battery_time = 0.
     # offroad, card isn't running to parse the body's CAN into carState, so read BODY_DATA here
     self._can_sock = messaging.sub_sock('can', conflate=False, timeout=0)
-    self._offroad_label = UnifiedLabel("switch to drive mode to use", 95 if gui_app.big_ui() else 45, FontWeight.DISPLAY,
+    self._offroad_label = UnifiedLabel("drive mode to wake", 95 if gui_app.big_ui() else 45, FontWeight.DISPLAY,
                                        alignment=TextAlignment.CENTER,
                                        alignment_vertical=TextAlignmentVertical.MIDDLE)
 
@@ -167,7 +167,7 @@ class BodyLayout(Widget):
       if animation not in OFFROAD_SCENES:
         rl.draw_rectangle(int(self.rect.x), int(self.rect.y), int(self.rect.width), int(self.rect.height), rl.Color(0, 0, 0, 175))
       upper_half = rl.Rectangle(rect.x, rect.y, rect.width, rect.height / 2)
-      self._offroad_label.set_text(f"charging {round(self._battery * 100)}%" if self._charging else "switch to drive mode to use")
+      self._offroad_label.set_text(f"charging {round(self._battery * 100)}%" if self._charging else "drive mode to wake")
       self._offroad_label.render(upper_half)
 
     # charge meter above the face: filled dots for the battery level, the next one pulses while charging.
