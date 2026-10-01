@@ -1,11 +1,13 @@
 import time
 import pyray as rl
 
+import openpilot.cereal.messaging as messaging
+
 from openpilot.system.ui.lib.application import gui_app, FontWeight, TextAlignment, TextAlignmentVertical
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.selfdrive.ui.ui_state import ui_state
-from openpilot.selfdrive.ui.body.animations import FaceAnimator, ASLEEP, CONTENT, INQUISITIVE, LIVE_DOT, NORMAL, SLEEPY, TIRED, WINK
+from openpilot.selfdrive.ui.body.animations import FaceAnimator, ASLEEP, BATTERY_METER, CONTENT, INQUISITIVE, LIVE_DOT, NORMAL, SLEEPY, TIRED, WINK
 
 GRID_COLS = 16
 GRID_ROWS = 8
@@ -17,6 +19,10 @@ IDLE_SPEED_THRESH = 0.01   # m/s — below this counts as no input
 LOW_BATTERY = 0.15         # fuelGauge below this looks tired
 TELEOP_TIMEOUT = 1.0       # seconds since the last joystick message before teleop counts as disconnected
 WINK_DURATION = 1.5        # seconds the wink plays when someone connects
+BODY_DATA_ADDR = 0x203     # BODY_DATA in comma_body.dbc, sent by the body at 1Hz even when offroad
+BODY_DATA_TIMEOUT = 5.0    # seconds before the last offroad battery reading is stale
+METER_GREEN = rl.Color(80, 220, 120, 255)
+METER_EMPTY = rl.Color(255, 255, 255, 45)
 
 
 # This class is used both in BIG (tizi) and small (mici) UIs
@@ -30,7 +36,12 @@ class BodyLayout(Widget):
     self._was_active = False
     self._teleop_connected = False
     self._wink_until = 0.
-    self._offroad_label = UnifiedLabel("turn on ignition to use", 95 if gui_app.big_ui() else 45, FontWeight.DISPLAY,
+    self._charging = False
+    self._battery = 0.
+    self._battery_time = 0.
+    # offroad, card isn't running to parse the body's CAN into carState, so read BODY_DATA here
+    self._can_sock = messaging.sub_sock('can', conflate=False, timeout=0)
+    self._offroad_label = UnifiedLabel("switch to drive mode to use", 95 if gui_app.big_ui() else 45, FontWeight.DISPLAY,
                                        alignment=TextAlignment.CENTER,
                                        alignment_vertical=TextAlignmentVertical.MIDDLE)
 
@@ -48,10 +59,25 @@ class BodyLayout(Widget):
       y = int(offset_y + row * spacing)
       rl.draw_circle(x, y, DOT_RADIUS, color)
 
+  def _update_battery(self, sm):
+    now = time.monotonic()
+    if ui_state.is_onroad() and sm.recv_frame['carState'] > 0:
+      self._charging, self._battery, self._battery_time = sm['carState'].charging, sm['carState'].fuelGauge, now
+    for dat in messaging.drain_sock_raw(self._can_sock):
+      if ui_state.is_onroad():
+        continue  # carState has it; don't parse the busy onroad bus
+      for c in messaging.log_from_bytes(dat).can:
+        if c.address == BODY_DATA_ADDR and len(c.dat) >= 4:
+          # byte 3: BATT_PERCENTAGE in the top 7 bits, CHARGER_CONNECTED in the lowest
+          self._charging, self._battery, self._battery_time = bool(c.dat[3] & 1), (c.dat[3] >> 1) / 100., now
+    if now - self._battery_time > BODY_DATA_TIMEOUT:
+      self._charging = False
+
   def _update_state(self):
     super()._update_state()
 
     sm = ui_state.sm
+    self._update_battery(sm)
 
     if ui_state.is_onroad():
       if not self._was_active:
@@ -67,7 +93,7 @@ class BodyLayout(Widget):
         self._animator.set_animation(WINK)
       elif has_input:
         self._animator.set_animation(NORMAL)
-      elif cs.charging:
+      elif self._charging:
         self._animator.set_animation(CONTENT)
       elif sm.recv_frame['carState'] > 0 and cs.fuelGauge < LOW_BATTERY:
         self._animator.set_animation(TIRED)
@@ -113,4 +139,14 @@ class BodyLayout(Widget):
     if ui_state.is_offroad():
       rl.draw_rectangle(int(self.rect.x), int(self.rect.y), int(self.rect.width), int(self.rect.height), rl.Color(0, 0, 0, 175))
       upper_half = rl.Rectangle(rect.x, rect.y, rect.width, rect.height / 2)
+      self._offroad_label.set_text(f"charging {round(self._battery * 100)}%" if self._charging else "switch to drive mode to use")
       self._offroad_label.render(upper_half)
+
+    # charge meter above the face: filled dots for the battery level, the next one pulses while charging.
+    # drawn last so it stays bright over the dimmed offroad face
+    if self._charging:
+      filled = min(int(self._battery * len(BATTERY_METER)), len(BATTERY_METER))
+      self.draw_dot_grid(rect, BATTERY_METER[filled:], METER_EMPTY)
+      self.draw_dot_grid(rect, BATTERY_METER[:filled], METER_GREEN)
+      if filled < len(BATTERY_METER) and time.monotonic() % 1.2 < 0.6:
+        self.draw_dot_grid(rect, [BATTERY_METER[filled]], METER_GREEN)

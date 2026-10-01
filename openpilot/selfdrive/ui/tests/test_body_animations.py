@@ -1,7 +1,7 @@
 import unittest
 
 from openpilot.selfdrive.ui.body import animations
-from openpilot.selfdrive.ui.body.animations import Animation, LIVE_DOT
+from openpilot.selfdrive.ui.body.animations import Animation, BATTERY_METER, LIVE_DOT
 
 GRID_ROWS, GRID_COLS = 8, 16
 
@@ -15,3 +15,4 @@ class TestBodyAnimations(unittest.TestCase):
         assert all(0 <= r < GRID_ROWS and 0 <= c < GRID_COLS for r, c in frame), name
         # the live indicator must never be mistaken for part of a face
         assert LIVE_DOT not in frame, name
+        assert not set(BATTERY_METER) & set(frame), name

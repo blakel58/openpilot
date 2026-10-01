@@ -197,6 +197,9 @@ WINK = Animation(
 # shown (in red) while someone is connected and driving; a corner no face uses
 LIVE_DOT = (7, 15)
 
+# battery meter shown (in green) above the face while charging; fills left to right
+BATTERY_METER = [(0, c) for c in range(4, 12)]
+
 # --- Face Animator Class ---
 
 class FaceAnimator:
