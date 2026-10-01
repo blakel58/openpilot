@@ -9,6 +9,14 @@ body's webrtcd over an SSH tunnel (so it's authenticated with your SSH key).
 Nothing goes through comma's servers.
 
   tools/bodyteleop/web.py --body 192.168.1.42
+
+When a ROS bridge on another computer is the thing connected to the body (only one thing
+can be at a time), drive through it instead:
+
+  tools/bodyteleop/web.py --ros jetson
+
+That runs the bridge's teleop relay over SSH: drive commands go in, and the camera and
+status come back the same way.
 """
 import argparse
 import dataclasses
@@ -17,6 +25,7 @@ import os
 import re
 import socket
 import subprocess
+import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -114,6 +123,62 @@ class Body:
       return json.loads(resp.read())
 
 
+class RosLink:
+  """Drive through a ROS bridge on another computer, over one SSH connection to its teleop relay."""
+  RELAY = "docker exec -i comma_body_bridge /entrypoint.sh ros2 run comma_body_bridge teleop_relay"
+  MAX_SPEED = 0.8   # m/s at full stick
+  MAX_TURN = 1.6    # rad/s at full stick
+
+  def __init__(self, host: str):
+    self.host = host
+    self.proc: subprocess.Popen | None = None
+    self.jpeg = b""
+    self.frame_id = 0
+    self.status: dict = {}
+    self.lock = threading.Lock()
+
+  def _ensure(self):
+    if self.proc is not None and self.proc.poll() is None:
+      return
+    self.proc = subprocess.Popen(["ssh", self.host, self.RELAY], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    threading.Thread(target=self._read, args=(self.proc,), daemon=True).start()
+
+  def _read(self, proc: subprocess.Popen):
+    # "J <bytes>" then a JPEG, or "S <json>"
+    out = proc.stdout
+    assert out is not None
+    while True:
+      header = out.readline()
+      if not header:
+        return
+      kind, _, rest = header.strip().partition(b" ")
+      if kind == b"J" and rest.isdigit():
+        data = out.read(int(rest))
+        self.jpeg, self.frame_id = data, self.frame_id + 1
+      elif kind == b"S":
+        try:
+          self.status = json.loads(rest)
+        except ValueError:
+          pass
+
+  def drive(self, axes: list[float]):
+    """Joystick axes like the body takes: [speed (negative = forward), turn (positive = left)]."""
+    self._ensure()
+    forward = -max(-1., min(1., float(axes[0]))) * self.MAX_SPEED
+    turn = max(-1., min(1., float(axes[1]))) * self.MAX_TURN
+    with self.lock:
+      try:
+        assert self.proc is not None and self.proc.stdin is not None
+        self.proc.stdin.write(f"{forward:.3f} {turn:.3f}\n".encode())
+        self.proc.stdin.flush()
+      except OSError:
+        pass  # the relay went away; it's restarted on the next command
+
+  def close(self):
+    if self.proc is not None:
+      self.proc.terminate()
+
+
 class Handler(BaseHTTPRequestHandler):
   server: "TeleopServer"
 
@@ -126,14 +191,40 @@ class Handler(BaseHTTPRequestHandler):
     self.wfile.write(body)
 
   def do_GET(self):
+    ros = self.server.ros
     if self.path in ("/", "/index.html"):
       with open(os.path.join(TELEOPDIR, "static", "index.html"), "rb") as f:
         self._send(200, f.read(), "text/html; charset=utf-8")
+    elif self.path == "/mode":
+      self._send(200, json.dumps({"mode": "ros" if ros is not None else "webrtc", "host": ros.host if ros is not None else ""}).encode(), "application/json")
+    elif self.path == "/status" and ros is not None:
+      self._send(200, json.dumps({**ros.status, "frames": ros.frame_id}).encode(), "application/json")
+    elif self.path == "/video" and ros is not None:
+      ros._ensure()
+      self.send_response(200)
+      self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+      self.end_headers()
+      sent = -1
+      try:
+        while True:
+          if ros.frame_id != sent and ros.jpeg:
+            sent, jpeg = ros.frame_id, ros.jpeg
+            self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % len(jpeg) + jpeg + b"\r\n")
+          time.sleep(0.02)
+      except OSError:
+        pass
     else:
       self._send(404, b"not found", "text/plain")
 
   def do_POST(self):
-    if self.path != "/offer":
+    if self.path == "/cmd" and self.server.ros is not None:
+      try:
+        self.server.ros.drive(json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))["axes"])
+        self._send(200, b"{}", "application/json")
+      except (ValueError, KeyError, IndexError, TypeError):
+        self._send(400, b"{}", "application/json")
+      return
+    if self.path != "/offer" or self.server.body is None:
       self._send(404, b"not found", "text/plain")
       return
     try:
@@ -149,29 +240,36 @@ class Handler(BaseHTTPRequestHandler):
 
 class TeleopServer(ThreadingHTTPServer):
   daemon_threads = True
-  body: Body
+  body: Body | None = None
+  ros: RosLink | None = None
 
 
 def main():
   parser = argparse.ArgumentParser(description="comma body local teleop")
   parser.add_argument("--body", help="body IP address or hostname (connects over SSH)")
   parser.add_argument("--user", default="comma", help="SSH user on the body")
+  parser.add_argument("--ros", metavar="HOST", help="drive through the ROS bridge running on this SSH host instead of connecting to the body directly")
   parser.add_argument("--webrtcd", help="webrtcd URL to use directly instead of an SSH tunnel, e.g. when running on the body")
   parser.add_argument("--host", default="127.0.0.1", help="address to serve the control page on (default: this computer only)")
   parser.add_argument("--port", type=int, default=5005, help="port for the control page (5000 is taken by AirPlay on macOS)")
   args = parser.parse_args()
-  if args.body is None and args.webrtcd is None:
-    parser.error("pass --body <ip> (or --webrtcd <url>)")
+  if args.body is None and args.webrtcd is None and args.ros is None:
+    parser.error("pass --body <ip>, --ros <host>, or --webrtcd <url>")
 
   server = TeleopServer((args.host, args.port), Handler)
-  server.body = Body(args.body, args.user, args.webrtcd)
+  if args.ros is not None:
+    server.ros = RosLink(args.ros)
+  else:
+    server.body = Body(args.body, args.user, args.webrtcd)
   print(f"comma body teleop: http://{'localhost' if args.host == '127.0.0.1' else args.host}:{args.port}")
   try:
     server.serve_forever()
   except KeyboardInterrupt:
     pass
   finally:
-    server.body.close()
+    for link in (server.body, server.ros):
+      if link is not None:
+        link.close()
 
 
 if __name__ == "__main__":

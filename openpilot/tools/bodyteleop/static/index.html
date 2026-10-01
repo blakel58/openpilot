@@ -54,6 +54,7 @@
 
   <div class="video">
     <video id="video" autoplay playsinline muted></video>
+    <img id="mjpeg" alt="" style="display:none;width:100%;height:100%;object-fit:contain">
     <div class="overlay" id="overlay">Not connected</div>
   </div>
 
@@ -79,6 +80,7 @@
 <script>
 const $ = (id) => document.getElementById(id);
 let pc = null, dc = null, sendTimer = null, statsTimer = null;
+let rosMode = false, rosHost = '', rosOn = false;  // driving through a ROS bridge on another computer instead of straight to the body
 let command = [0, 0];  // [throttle (negative = forward), turn (positive = left)]
 let smoothed = [0, 0];
 const TICK = 0.05;  // seconds between commands
@@ -138,9 +140,46 @@ async function updateStats() {
   $('path').className = 'value ' + (relayed ? 'bad' : lan ? 'ok' : 'warn');
 }
 
+function post(path, body) {
+  return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+}
+
+function connectRos() {
+  rosOn = true;
+  setStatus('connecting…', 'warn');
+  $('connect').textContent = 'Disconnect';
+  $('video').style.display = 'none';
+  $('mjpeg').style.display = 'block';
+  $('mjpeg').src = '/video?' + Date.now();
+  $('path').textContent = `through ROS on ${rosHost}`; $('path').className = 'value ok';
+  let lastFrames = -1, stale = 0;
+  sendTimer = setInterval(() => {
+    updateCommand();
+    post('/cmd', { axes: command }).catch(() => {});
+    driveLog.push([(performance.now() / 1000).toFixed(3), command[0].toFixed(3), command[1].toFixed(3), '', '', latest.vEgo, '', '']);
+    if (driveLog.length > LOG_MAX) driveLog.shift();
+  }, 50);
+  statsTimer = setInterval(async () => {
+    try {
+      const st = await (await fetch('/status')).json();
+      if (st.battery != null) $('battery').textContent = `${Math.round(st.battery * 100)}%${st.charging ? ' (charging)' : ''}`;
+      latest.vEgo = st.speed ?? 0;
+      stale = st.frames === lastFrames ? stale + 1 : 0;
+      lastFrames = st.frames;
+      if (st.frames > 0 && stale < 3) { setStatus('connected', 'ok'); $('overlay').hidden = true; }
+      else if (stale >= 3) { setStatus('no video from the bridge', 'warn'); }
+    } catch (e) { setStatus('server not responding', 'bad'); }
+  }, 1000);
+}
+
 function disconnect(reason = 'Not connected') {
   clearInterval(sendTimer); clearInterval(statsTimer);
   sendTimer = statsTimer = null;
+  if (rosOn) {
+    rosOn = false;
+    post('/cmd', { axes: [0, 0] }).catch(() => {});
+    $('mjpeg').src = ''; $('mjpeg').style.display = 'none'; $('video').style.display = 'block';
+  }
   if (dc) { try { send('testJoystick', { axes: [0, 0], buttons: [false] }); } catch (e) {} }
   if (pc) pc.close();
   pc = dc = null;
@@ -220,7 +259,15 @@ async function connect() {
   }
 }
 
-$('connect').onclick = () => (pc ? disconnect() : connect());
+$('connect').onclick = () => {
+  if (pc || rosOn) disconnect();
+  else if (rosMode) connectRos();
+  else connect();
+};
+fetch('/mode').then((r) => r.json()).then((m) => {
+  rosMode = m.mode === 'ros'; rosHost = m.host;
+  if (rosMode) { $('camera').disabled = true; $('overlay').textContent = `Not connected (drives through ROS on ${rosHost})`; }
+}).catch(() => {});
 $('savelog').onclick = () => {
   const csv = 'time_s,cmd_throttle,cmd_turn,wheel_rpm_l,wheel_rpm_r,v_ego,torque_l,torque_r\n' + driveLog.map((r) => r.join(',')).join('\n');
   const a = document.createElement('a');
