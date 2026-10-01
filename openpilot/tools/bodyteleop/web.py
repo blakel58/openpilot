@@ -58,15 +58,26 @@ class Body:
     self.host = host
     self.user = user
     self.tunnel: subprocess.Popen | None = None
+    self.tunnel_port: int | None = None
     if webrtcd_url is not None:
       self.webrtcd_url = webrtcd_url
     else:
       assert host is not None
-      port = _free_port()
-      self.webrtcd_url = f"http://127.0.0.1:{port}"
-      # -N: tunnel only, no remote shell. ExitOnForwardFailure so a bad tunnel fails loudly
-      self.tunnel = subprocess.Popen(["ssh", "-N", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=10",
-                                      "-L", f"{port}:127.0.0.1:{WEBRTCD_PORT}", f"{user}@{host}"])
+      self.tunnel_port = _free_port()
+      self.webrtcd_url = f"http://127.0.0.1:{self.tunnel_port}"
+      self.ensure_tunnel()
+
+  def ensure_tunnel(self):
+    # the tunnel dies when the body reboots or drops off wifi; reopen it when needed
+    if self.tunnel_port is None or (self.tunnel is not None and self.tunnel.poll() is None):
+      return
+    # -N: tunnel only, no remote shell. ExitOnForwardFailure so a bad tunnel fails loudly
+    self.tunnel = subprocess.Popen(["ssh", "-N", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=10",
+                                    "-L", f"{self.tunnel_port}:127.0.0.1:{WEBRTCD_PORT}", f"{self.user}@{self.host}"])
+    for _ in range(20):
+      if self.webrtcd_up() or self.tunnel.poll() is not None:
+        break
+      time.sleep(0.25)
 
   def close(self):
     if self.tunnel is not None:
@@ -86,6 +97,7 @@ class Body:
     subprocess.run(["ssh", f"{self.user}@{self.host}", "echo -n 1 > /data/params/d/IsLiveStreaming"], check=True, timeout=10)
 
   def stream(self, sdp: str) -> dict:
+    self.ensure_tunnel()
     if not self.webrtcd_up():
       self.wake_webrtcd()
       for _ in range(40):
