@@ -16,7 +16,7 @@ from openpilot.selfdrive.ui.body.animations import FaceAnimator, ASLEEP, CONTENT
 from openpilot.selfdrive.ui.body import face_command
 from openpilot.selfdrive.ui.body.companion import companion
 from openpilot.selfdrive.ui.body.smooth_face import CHASE_SECONDS, ChargeEstimator, SmoothFace, asleep_hint, charge_panel, charge_strip, \
-                                                    chase_scene, format_eta_short
+                                                    chase_scene, format_eta_short, listening_shapes, thinking_look, thinking_shapes
 
 GRID_COLS = 16
 GRID_ROWS = 8
@@ -247,6 +247,14 @@ class BodyLayout(Widget):
     sm = ui_state.sm
     return sm.recv_frame['rawAudioData'] > 0 and (time.monotonic() - sm.recv_time['rawAudioData']) < MIC_TIMEOUT
 
+  def _signal_shapes(self, now: float, aspect: float) -> list[tuple]:
+    signal = self._signal(now)
+    if signal == "listening":
+      return listening_shapes(aspect, now)
+    if signal == "thinking":
+      return thinking_shapes(aspect, now)
+    return []
+
   def _draw_badge(self, rect: rl.Rectangle, text: str, color: rl.Color, right: bool, icon: str, pulse: float = 1.):
     """A labelled pill in a top corner: an icon and a word, so what it means doesn't have to be guessed."""
     h = BADGE_HEIGHT * rect.height
@@ -339,6 +347,16 @@ class BodyLayout(Widget):
         for tri in ((a, b, c), (a, c, d), (c, b, a), (d, c, a)):
           rl.draw_triangle(*tri, rl.Color(*color))
 
+  def _signal(self, now: float) -> str | None:
+    """Whether the companion computer says it is hearing something ("listening") or working on it ("thinking")."""
+    if now >= self._status_until or not self._mic_live():
+      return None
+    if self._status_text == "listening":
+      return "listening"
+    if self._status_text in ("thinking", "heard you"):
+      return "thinking"
+    return None
+
   def _smooth_expression(self, now: float) -> dict:
     """What the smooth face should be doing right now, as arguments for SmoothFace.update."""
     if ui_state.is_offroad():
@@ -346,6 +364,14 @@ class BodyLayout(Widget):
       return {"expression": "normal" if self._teleop_connected else "asleep"}
     cs = ui_state.sm['carState']
     speed = abs(cs.vEgo) / FULL_SPEED
+    # someone is talking to it: the whole face shows it, not just the badge
+    signal = self._signal(now)
+    if signal == "listening":
+      # wide-eyed and still, looking at whoever it was already looking at
+      look = self._face_cmd.look if self._face_cmd is not None and now < self._face_cmd_until else None
+      return {"expression": "surprised", "intensity": 0.55, "look": look or (0., -0.1), "speed": speed}
+    if signal == "thinking":
+      return {"expression": "curious", "look": thinking_look(now), "speed": speed}
     # something on the device is driving the face
     if self._face_cmd is not None and now < self._face_cmd_until:
       cmd = self._face_cmd
@@ -382,6 +408,7 @@ class BodyLayout(Widget):
         shapes += asleep_hint(self._smooth.aspect)
     elif self._charging:
       shapes += charge_strip(self._smooth.aspect, self._battery, meter_color(self._battery))
+    shapes += self._signal_shapes(now, self._smooth.aspect)
     self._draw_shapes(rect, shapes)
 
     self._draw_badges(rect)
@@ -450,4 +477,5 @@ class BodyLayout(Widget):
       for dot, color in battery_meter(self._battery, now, now - self._plug_time):
         self.draw_dot_grid(rect, [dot], rl.Color(*color))
 
+    self._draw_shapes(rect, self._signal_shapes(time.monotonic(), rect.width / rect.height))
     self._draw_badges(rect)

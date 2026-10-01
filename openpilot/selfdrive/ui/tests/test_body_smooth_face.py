@@ -352,3 +352,22 @@ class TestCompanion(unittest.TestCase):
       self.assertIsNone(face_command.parse(data))
       self.assertIsNone(face_command.parse_overlay(data))
       self.assertIsNone(face_command.parse_status(data))
+
+
+class TestSignals(unittest.TestCase):
+  def test_listening_and_thinking_stay_under_the_eyes(self):
+    from openpilot.selfdrive.ui.body.smooth_face import SIGNAL_Y, listening_shapes, thinking_look, thinking_shapes
+    for t in (0., 0.3, 1.7, 12.4):
+      bars, dots = listening_shapes(2., t), thinking_shapes(2., t)
+      self.assertEqual((len(bars), len(dots)), (5, 3))
+      for shape in bars + dots:
+        self.assertAlmostEqual(shape[1], 1., delta=0.25)        # centred on the face
+        self.assertAlmostEqual(shape[2], SIGNAL_Y, delta=0.08)  # below the eyes, above the bottom edge
+      x, y = thinking_look(t)
+      self.assertLessEqual(abs(x), 1.)
+      self.assertLess(y, -0.5)   # looking up
+
+  def test_they_move(self):
+    from openpilot.selfdrive.ui.body.smooth_face import listening_shapes, thinking_shapes
+    self.assertNotEqual(listening_shapes(2., 0.), listening_shapes(2., 0.2))
+    self.assertNotEqual(thinking_shapes(2., 0.), thinking_shapes(2., 0.2))

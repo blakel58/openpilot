@@ -372,6 +372,40 @@ def charge_strip(aspect: float, level: float, color: tuple[int, int, int, int]) 
   return shapes
 
 
+# --- showing that it heard you ---
+# Drawn under the eyes, in the middle of the face, where whoever is talking to it is already looking.
+
+SIGNAL_Y = 0.85
+LISTENING_BARS = 5
+
+
+def listening_shapes(aspect: float, t: float, y: float = SIGNAL_Y) -> list[tuple]:
+  """A row of bars rippling like a sound level: it is hearing something."""
+  shapes: list[tuple] = []
+  width, gap = 0.045, 0.082
+  for i in range(LISTENING_BARS):
+    # each bar swells in turn, the middle ones tallest
+    swell = 0.5 + 0.5 * math.sin(t * 7.5 - i * 1.1)
+    height = width + (0.07 + 0.08 * (1. - abs(i - (LISTENING_BARS - 1) / 2) / LISTENING_BARS * 2)) * swell
+    shapes.append(("rrect", aspect / 2 + (i - (LISTENING_BARS - 1) / 2) * gap, y, width, height, width / 2, WHITE))
+  return shapes
+
+
+def thinking_shapes(aspect: float, t: float, y: float = SIGNAL_Y) -> list[tuple]:
+  """Three dots hopping one after another: it is working out what was said."""
+  shapes: list[tuple] = []
+  for i in range(3):
+    phase = (t * 1.6 - i * 0.18) % 1.
+    hop = math.sin(math.pi * phase / 0.45) if phase < 0.45 else 0.
+    shapes.append(("circle", aspect / 2 + (i - 1) * 0.12, y - 0.06 * hop, 0.034, WHITE))
+  return shapes
+
+
+def thinking_look(t: float) -> tuple[float, float]:
+  """Where the eyes go while it thinks: up and off to one side, drifting slowly across."""
+  return 0.75 * math.sin(t * 0.9), -0.85
+
+
 # --- the chase, in the smooth style ---
 # A comma hops across the screen with a tiny comma body rolling after it. Halfway, the comma
 # stops for a breather, the body nearly catches it, and the comma bolts.
