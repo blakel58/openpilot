@@ -9,6 +9,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import drop_realtime
 from openpilot.common.swaglog import cloudlog
 from openpilot.system.athena.registration import UNREGISTERED_DONGLE_ID
+from openpilot.system.body_privacy import connect_allowed
 from openpilot.selfdrive.ui.lib.api_helpers import get_token
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 
@@ -147,7 +148,8 @@ class PrimeState:
     drop_realtime()
     from openpilot.selfdrive.ui.ui_state import ui_state, device
     while self._running:
-      if not ui_state.started and device._awake:
+      # a comma body with comma connect turned off doesn't check in with comma's servers
+      if not ui_state.started and device._awake and connect_allowed(self._params):
         self._fetch_prime_status()
         self._fetch_pairing_provider()
 

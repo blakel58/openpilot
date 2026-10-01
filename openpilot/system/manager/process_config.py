@@ -37,6 +37,10 @@ def uploads_allowed(started: bool, params: Params, CP: car.CarParams) -> bool:
   # uses the persisted CarParams too, so a body stays private while offroad
   return not body_privacy_active(params, CP)
 
+def lan_bridge(started: bool, params: Params, CP: car.CarParams) -> bool:
+  # the bridge publishes every service (camera streams included) to anyone on the network, unauthenticated
+  return notcar(started, params, CP) and not body_privacy_active(params, CP)
+
 def ublox_available() -> bool:
   return os.path.exists('/dev/ttyHS0') and not os.path.exists('/persist/comma/use-quectel-gps')
 
@@ -44,7 +48,8 @@ def ublox(started: bool, params: Params, CP: car.CarParams) -> bool:
   use_ublox = ublox_available()
   if use_ublox != params.get_bool("UbloxAvailable"):
     params.put_bool("UbloxAvailable", use_ublox, block=True)
-  return started and use_ublox
+  # no location on a private comma body (pigeond also fetches assistance data from comma)
+  return started and use_ublox and not body_privacy_active(params, CP)
 
 def joystick(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and params.get_bool("JoystickDebugMode")
@@ -62,7 +67,7 @@ def not_long_maneuver(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and not params.get_bool("LongitudinalManeuverMode")
 
 def qcomgps(started: bool, params: Params, CP: car.CarParams) -> bool:
-  return started and not ublox_available()
+  return started and not ublox_available() and not body_privacy_active(params, CP)
 
 def always_run(started: bool, params: Params, CP: car.CarParams) -> bool:
   return True
@@ -130,7 +135,7 @@ procs = [
   PythonProcess("uploader", "openpilot.system.loggerd.uploader", uploads_allowed),
 
   # debug procs
-  NativeProcess("bridge", "openpilot/cereal/messaging", ["./bridge"], notcar),
+  NativeProcess("bridge", "openpilot/cereal/messaging", ["./bridge"], lan_bridge),
   PythonProcess("webrtcd", "openpilot.system.webrtc.webrtcd", or_(livestream, notcar)),
   PythonProcess("joystick", "openpilot.tools.joystick.joystick_control", and_(joystick, iscar)),
 ]

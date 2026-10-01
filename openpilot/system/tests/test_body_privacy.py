@@ -4,7 +4,7 @@ from opendbc.car.structs import car
 from openpilot.common.params import Params
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.system import body_privacy
-from openpilot.system.manager.process_config import logging, uploads_allowed
+from openpilot.system.manager.process_config import lan_bridge, logging, qcomgps, uploads_allowed
 
 
 def _cp(not_car: bool):
@@ -91,3 +91,12 @@ class TestBodyPrivacy(OpenpilotTestCase):
   def test_connect_unaffected_on_car(self):
     self._drive(False)
     assert body_privacy.connect_allowed(self.params)
+
+  def test_no_lan_bridge_on_private_body(self):
+    CP = self._drive(True)
+    assert not lan_bridge(True, self.params, CP)
+    self.params.put_bool("BodyDataSharing", True, block=True)
+    assert lan_bridge(True, self.params, CP)
+
+  def test_no_gps_on_private_body(self):
+    assert not qcomgps(True, self.params, self._drive(True))
