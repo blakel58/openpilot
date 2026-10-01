@@ -223,6 +223,27 @@ class TestFaceCommand(unittest.TestCase):
     self.assertEqual(face_command.parse(b'{"face": {"expression": "asleep"}}').expression, "normal")
 
 
+class TestOverlay(unittest.TestCase):
+  def test_round_trip(self):
+    overlay = face_command.Overlay((4, 3), [(0, 1), (2, 3)], (1, 0), [(0.1, 0.2), (0.5, 0.25), (0.4, 0.9)], False, "3/40  closer")
+    self.assertEqual(face_command.parse_overlay(overlay.to_bytes()), overlay)
+    self.assertIsNone(face_command.parse(overlay.to_bytes()))                    # a guide isn't a face command
+    self.assertIsNone(face_command.parse_overlay(face_command.FaceCommand().to_bytes()))  # and the other way round
+
+  def test_drops_bad_values(self):
+    raw = {"grid": [4, 3], "done": [[0, 0], [9, 9], "x", [1, True]], "target": [5, 5], "outline": [[0.5, 0.5], [7, -3], ["a", 1], [1]],
+           "ok": "maybe", "text": "t" * 500}
+    overlay = face_command.parse_overlay(json.dumps({"overlay": raw}).encode())
+    self.assertEqual(overlay.done, [(0, 0)])
+    self.assertIsNone(overlay.target)
+    self.assertEqual(overlay.outline, [(0.5, 0.5), (1., 0.)])   # out-of-range points are pulled onto the screen
+    self.assertTrue(overlay.ok)
+    self.assertEqual(len(overlay.text), 60)
+    self.assertEqual(face_command.parse_overlay(b'{"overlay": {"grid": [99, 0]}}').grid, (1, 1))
+    for junk in (b"", b"nope", b'{"overlay": 3}'):
+      self.assertIsNone(face_command.parse_overlay(junk))
+
+
 class TestCharging(unittest.TestCase):
   def test_estimates_time_to_full(self):
     est = ChargeEstimator()

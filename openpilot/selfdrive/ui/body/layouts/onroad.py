@@ -71,6 +71,8 @@ class BodyLayout(Widget):
     self._face_sock = messaging.sub_sock(face_command.SERVICE, conflate=True, timeout=0)
     self._face_cmd: face_command.FaceCommand | None = None
     self._face_cmd_until = 0.
+    self._overlay: face_command.Overlay | None = None
+    self._overlay_until = 0.
     self._charge_estimator = ChargeEstimator()
     self._charge_eta: float | None = None
     self._charging = False
@@ -141,9 +143,14 @@ class BodyLayout(Widget):
 
     msg = messaging.recv_one_or_none(self._face_sock)
     if msg is not None:
-      cmd = face_command.parse(bytes(msg.customReservedRawData0))
+      data = bytes(msg.customReservedRawData0)
+      cmd = face_command.parse(data)
       if cmd is not None:
         self._face_cmd, self._face_cmd_until = cmd, time.monotonic() + cmd.seconds
+      overlay = face_command.parse_overlay(data)
+      if overlay is not None:
+        self._overlay, self._overlay_until = overlay, time.monotonic() + face_command.OVERLAY_SECONDS
+        device._reset_interactive_timeout()  # someone is standing in front of it following the guide: keep the screen on
 
     if ui_state.is_onroad():
       if not self._was_active:
@@ -311,7 +318,34 @@ class BodyLayout(Widget):
       pulse = 0.7 + 0.3 * (0.5 - 0.5 * math.cos(2 * math.pi * time.monotonic() / 1.2))
       rl.draw_circle(int(rect.x + rect.width - 0.09 * rect.height), int(rect.y + 0.09 * rect.height), 0.035 * rect.height * pulse, rl.Color(255, 60, 50, 255))
 
+  def _render_overlay(self, rect: rl.Rectangle, overlay: face_command.Overlay):
+    """A guide for someone standing in front of the body: which parts of the view are done, where to go next, and an outline."""
+    cols, rows = overlay.grid
+    cw, ch = rect.width / cols, (rect.height * 0.86) / rows
+    pulse = 0.5 - 0.5 * math.cos(2 * math.pi * time.monotonic() / 1.0)
+    for row in range(rows):
+      for col in range(cols):
+        cell = rl.Rectangle(rect.x + col * cw + 6, rect.y + row * ch + 6, cw - 12, ch - 12)
+        if (row, col) in overlay.done:
+          rl.draw_rectangle_rounded(cell, 0.12, 8, rl.Color(60, 200, 90, 120))
+        elif (row, col) == overlay.target:
+          rl.draw_rectangle_rounded(cell, 0.12, 8, rl.Color(255, 255, 255, int(40 + 70 * pulse)))
+          rl.draw_rectangle_rounded_lines_ex(cell, 0.12, 8, 6, rl.WHITE)
+        else:
+          rl.draw_rectangle_rounded_lines_ex(cell, 0.12, 8, 2, rl.Color(255, 255, 255, 70))
+    if len(overlay.outline) >= 2:
+      color = rl.Color(60, 230, 90, 255) if overlay.ok else rl.Color(255, 80, 70, 255)
+      pts = [rl.Vector2(rect.x + x * rect.width, rect.y + y * rect.height * 0.86) for x, y in overlay.outline]
+      for a, b in zip(pts, pts[1:] + pts[:1], strict=True):
+        rl.draw_line_ex(a, b, 10, color)
+        rl.draw_circle_v(a, 5, color)
+    if overlay.text:
+      self._draw_shapes(rect, [("text", rect.width / rect.height / 2, 0.93, 0.085, overlay.text, (255, 255, 255, 255), True)])
+
   def _render(self, rect: rl.Rectangle):
+    if self._overlay is not None and time.monotonic() < self._overlay_until:
+      self._render_overlay(rect, self._overlay)
+      return
     dots = self._animator.get_dots()
     animation = self._animator._animation
     # the smooth face takes over, except while one of the tiny body's scenes is playing

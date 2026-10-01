@@ -18,6 +18,19 @@ customReservedRawData0 service (cereal's channel reserved for forks):
 
 Commands only change what the face shows, and only while the body is awake.
 
+A message can instead carry a guide to show on the screen, for jobs where someone is
+standing in front of the body and needs to see what its camera sees (calibrating it):
+
+  {"overlay": {"grid": [4, 3], "done": [[0, 1]], "target": [0, 0], "outline": [[0.4, 0.3], ...], "ok": true, "text": "3/40"}}
+
+  grid      columns and rows the view is divided into
+  done      cells [row, col] that are finished (filled in)
+  target    the cell to move to next (highlighted)
+  outline   a shape to draw, points in 0..1 of the screen (e.g. where the camera sees the board)
+  ok        whether the outline is good (green) or not (red)
+  text      a line of text along the bottom
+The guide shows whether the body is awake or asleep, and goes away a second after the messages stop.
+
 From a shell on the device:
   python -m openpilot.selfdrive.ui.body.face_command surprised --seconds 2
   python -m openpilot.selfdrive.ui.body.face_command happy --look 0.5 0 --talking 0.7
@@ -53,6 +66,64 @@ class FaceCommand:
     if self.pose:
       face["pose"] = self.pose
     return json.dumps({"face": face}).encode()
+
+
+@dataclass
+class Overlay:
+  grid: tuple[int, int] = (1, 1)
+  done: list[tuple[int, int]] = field(default_factory=list)
+  target: tuple[int, int] | None = None
+  outline: list[tuple[float, float]] = field(default_factory=list)
+  ok: bool = True
+  text: str = ""
+
+  def to_bytes(self) -> bytes:
+    overlay: dict = {"grid": list(self.grid), "done": [list(c) for c in self.done], "ok": self.ok, "text": self.text,
+                     "outline": [list(pt) for pt in self.outline]}
+    if self.target is not None:
+      overlay["target"] = list(self.target)
+    return json.dumps({"overlay": overlay}).encode()
+
+
+OVERLAY_SECONDS = 1.0
+MAX_GRID = 8
+MAX_OUTLINE_POINTS = 64
+
+
+def _cell(value, cols: int, rows: int) -> tuple[int, int] | None:
+  if not isinstance(value, list) or len(value) != 2 or not all(isinstance(v, int) and not isinstance(v, bool) for v in value):
+    return None
+  return (value[0], value[1]) if 0 <= value[0] < rows and 0 <= value[1] < cols else None
+
+
+def parse_overlay(data: bytes) -> Overlay | None:
+  """Read a screen guide, ignoring anything malformed."""
+  if len(data) > MAX_BYTES:
+    return None
+  try:
+    raw = json.loads(data).get("overlay")
+  except (ValueError, AttributeError):
+    return None
+  if not isinstance(raw, dict):
+    return None
+  overlay = Overlay()
+  grid = raw.get("grid")
+  if isinstance(grid, list) and len(grid) == 2 and all(isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= MAX_GRID for v in grid):
+    overlay.grid = (grid[0], grid[1])
+  cols, rows = overlay.grid
+  if isinstance(raw.get("done"), list):
+    overlay.done = [c for c in (_cell(v, cols, rows) for v in raw["done"][:MAX_GRID * MAX_GRID]) if c is not None]
+  overlay.target = _cell(raw.get("target"), cols, rows)
+  if isinstance(raw.get("outline"), list):
+    for pt in raw["outline"][:MAX_OUTLINE_POINTS]:
+      if isinstance(pt, list) and len(pt) == 2:
+        x, y = _number(pt[0], 0., 1.), _number(pt[1], 0., 1.)
+        if x is not None and y is not None:
+          overlay.outline.append((x, y))
+  overlay.ok = raw.get("ok") is not False
+  if isinstance(raw.get("text"), str):
+    overlay.text = raw["text"][:60]
+  return overlay
 
 
 def _number(value, lo: float, hi: float) -> float | None:
@@ -102,6 +173,25 @@ def to_message(cmd: FaceCommand):
   return msg
 
 
+def relay_stdin() -> None:
+  """Publish each line read from standard input as a message, until it closes.
+
+  Lets another computer drive the face or the guide through an SSH connection:
+    ssh comma@body "... python -m openpilot.selfdrive.ui.body.face_command --stdin"
+  Only well-formed commands and guides are passed on.
+  """
+  import sys
+  import openpilot.cereal.messaging as messaging
+  pm = messaging.PubMaster([SERVICE])
+  for line in sys.stdin.buffer:
+    data = line.strip()
+    if parse(data) is None and parse_overlay(data) is None:
+      continue
+    msg = messaging.new_message(SERVICE, len(data))
+    msg.customReservedRawData0 = data
+    pm.send(SERVICE, msg)
+
+
 def send(cmd: FaceCommand, repeat_for: float = 0.) -> None:
   """Publish a command. With repeat_for, keep sending it for that many seconds (a new publisher needs a moment to be heard)."""
   import openpilot.cereal.messaging as messaging
@@ -114,12 +204,18 @@ def send(cmd: FaceCommand, repeat_for: float = 0.) -> None:
 
 def main():
   parser = argparse.ArgumentParser(description="Show an expression on the comma body's smooth face")
-  parser.add_argument("expression", choices=sorted(e for e in EXPRESSIONS if e != "asleep"))
+  parser.add_argument("expression", nargs="?", choices=sorted(e for e in EXPRESSIONS if e != "asleep"))
+  parser.add_argument("--stdin", action="store_true", help="relay commands read from standard input, one JSON message per line")
   parser.add_argument("--intensity", type=float, default=1.)
   parser.add_argument("--look", type=float, nargs=2, metavar=("X", "Y"))
   parser.add_argument("--talking", type=float)
   parser.add_argument("--seconds", type=float, default=DEFAULT_SECONDS)
   args = parser.parse_args()
+  if args.stdin:
+    relay_stdin()
+    return
+  if args.expression is None:
+    parser.error("give an expression, or --stdin")
   send(FaceCommand(args.expression, args.intensity, tuple(args.look) if args.look else None, args.talking, seconds=args.seconds))
 
 
