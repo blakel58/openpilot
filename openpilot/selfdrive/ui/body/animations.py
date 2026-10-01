@@ -319,8 +319,90 @@ def duration(animation: Animation) -> float:
   return len(animation.frames) * animation.frame_duration
 
 
-# battery meter shown (in green) above the face while charging; fills left to right
+# --- Reactions ---
+# short expressions the face plays in drive mode in response to something, then returns to normal
+
+EYE_HAPPY = [
+        (4, 2), (4, 3),
+(5, 1),                 (5, 4),
+]
+_REACTION_FRAME = 0.05
+
+
+def _eased(n: int) -> list[float]:
+  """0 -> 1 -> 0 over n steps, easing in and out."""
+  return [math.sin(math.pi * i / (n - 1)) ** 2 for i in range(n)]
+
+
+# tapped, or just plugged in: smiling eyes and two little bounces
+HAPPY = Animation(
+  # the brows sit on the top row, so only the eyes and mouth bounce
+  frames=[BROW_HIGH + _mirror(BROW_HIGH) + _shift(EYE_HAPPY + _mirror(EYE_HAPPY) + MOUTH_SMILE, (-0.35 * abs(math.sin(2 * math.pi * i / 32)), 0))
+          for i in range(33)],
+  frame_duration=_REACTION_FRAME,
+  mode=AnimationMode.ONCE_FORWARD,
+)
+
+# charger pulled out: eyes go wide and the mouth drops open
+SURPRISED = Animation(
+  frames=[_sized(EYE_OPEN + _mirror(EYE_OPEN), 1. + 0.22 * k) + BROW_HIGH + _mirror(BROW_HIGH) + _sized(MOUTH_OPEN, 0.7 + 0.3 * k)
+          for k in [0., 0.5, 1.] + [1.] * 18 + [0.5, 0.]],
+  frame_duration=_REACTION_FRAME,
+  mode=AnimationMode.ONCE_FORWARD,
+)
+
+# been spinning in place: the eyes keep going round for a moment
+_EYE_CENTER = (3.5, 2.5)
+
+
+def _spin_eye(angle: float, center_col: float) -> list[tuple]:
+  return [(_EYE_CENTER[0] + 1.05 * math.sin(angle + q * math.pi / 2), center_col + 1.05 * math.cos(angle + q * math.pi / 2), 0.85) for q in range(4)]
+
+
+DIZZY = Animation(
+  # the spin slows to a stop
+  frames=[_spin_eye(a, _EYE_CENTER[1]) + _spin_eye(-a, 15 - _EYE_CENTER[1]) + MOUTH_NORMAL
+          for a in [9 * math.pi * (1 - (1 - i / 50) ** 2) for i in range(51)]],
+  frame_duration=_REACTION_FRAME,
+  mode=AnimationMode.ONCE_FORWARD,
+)
+
+# driving fast: brows down, concentrating. looks where it turns, like the normal face
+FOCUSED = Animation(
+  frames=[_make_frame(EYE_OPEN, _mirror(EYE_OPEN), BROW_LOWERED, _mirror(BROW_LOWERED), MOUTH_NORMAL)],
+  left_turn_remove=NORMAL.left_turn_remove,
+  right_turn_remove=NORMAL.right_turn_remove,
+)
+
+# --- Battery meter ---
+# shown above the face while charging; fills left to right
 BATTERY_METER = [(0, c) for c in range(4, 12)]
+METER_EMPTY = (255, 255, 255, 45)
+_METER_SWEEP = 0.09  # seconds per dot when the meter fills in after plugging in
+
+
+def meter_color(level: float) -> tuple[int, int, int, int]:
+  """Red when nearly empty, through amber, to green."""
+  stops = [(0.0, (255, 70, 60)), (0.2, (255, 110, 50)), (0.5, (255, 200, 60)), (0.8, (80, 220, 120))]
+  for (l0, c0), (l1, c1) in zip(stops, stops[1:], strict=False):
+    if level <= l1:
+      k = max(0., (level - l0) / (l1 - l0))
+      return (*(round(a + (b - a) * k) for a, b in zip(c0, c1, strict=True)), 255)
+  return (*stops[-1][1], 255)
+
+
+def battery_meter(level: float, now: float, plugged_for: float) -> list[tuple[tuple, tuple[int, int, int, int]]]:
+  """The meter as (dot, color) pairs: filled dots with a pulse of charge running along them, and the next dot swelling."""
+  n = len(BATTERY_METER)
+  filled = min(int(level * n), n)
+  shown = min(filled, int(plugged_for / _METER_SWEEP))  # fills in one dot at a time just after plugging in
+  color = meter_color(level)
+  wave = (now * 6) % (n + 5) - 2
+  dots = [((r, c, 1. + 0.28 * math.exp(-(i - wave) ** 2 / 1.2)), color) for i, (r, c) in enumerate(BATTERY_METER[:shown])]
+  dots += [(d, METER_EMPTY) for d in BATTERY_METER[shown:]]
+  if shown == filled and filled < n:
+    dots.append(((*BATTERY_METER[filled], 0.35 + 0.65 * (0.5 - 0.5 * math.cos(2 * math.pi * now / 1.6))), color))
+  return dots
 
 # --- Face Animator Class ---
 
@@ -369,7 +451,8 @@ class FaceAnimator:
       self._seen_nonzero = True
 
     if self._next is not None:
-      if frame_index == 0 and (len(self._animation.frames) == 1 or self._seen_nonzero):
+      repeats = self._animation.mode in (AnimationMode.REPEAT_FORWARD, AnimationMode.REPEAT_FORWARD_BACKWARD)
+      if frame_index == 0 and (len(self._animation.frames) == 1 or self._seen_nonzero or repeats):
         return self._switch_to_next(now, self._next)
       # a play-once animation resting on its last frame is finished: hand over instead of rewinding
       if self._animation.mode == AnimationMode.ONCE_FORWARD and frame_index == len(self._animation.frames) - 1:

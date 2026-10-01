@@ -9,8 +9,8 @@ from openpilot.system.ui.lib.application import gui_app, FontWeight, TextAlignme
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.selfdrive.ui.ui_state import device, ui_state
-from openpilot.selfdrive.ui.body.animations import FaceAnimator, ASLEEP, BATTERY_METER, CONTENT, INQUISITIVE, LIVE_DOT, NORMAL, \
-                                                     OFFROAD_SCENES, SLEEPY, TIRED, WINK, YAWN, duration
+from openpilot.selfdrive.ui.body.animations import FaceAnimator, ASLEEP, CONTENT, DIZZY, FOCUSED, HAPPY, INQUISITIVE, LIVE_DOT, NORMAL, \
+                                                     OFFROAD_SCENES, SLEEPY, SURPRISED, TIRED, WINK, YAWN, battery_meter, duration
 
 GRID_COLS = 16
 GRID_ROWS = 8
@@ -27,8 +27,10 @@ SCENE_FIRST_DELAY = 2.0    # seconds after the screen wakes before the first sce
 SCENE_GAP = (4.0, 8.0)     # seconds of plain sleep between scenes
 BODY_DATA_ADDR = 0x203     # BODY_DATA in comma_body.dbc, sent by the body at 1Hz even when offroad
 BODY_DATA_TIMEOUT = 5.0    # seconds before the last offroad battery reading is stale
-METER_GREEN = rl.Color(80, 220, 120, 255)
-METER_EMPTY = rl.Color(255, 255, 255, 45)
+FAST_SPEED = 0.45          # m/s — above this the face concentrates
+SPIN_STEER = 0.5           # joystick turn axis beyond this, while barely moving, counts as spinning in place
+SPIN_SPEED = 0.15          # m/s
+SPIN_TIME = 3.0            # seconds of spinning before it gets dizzy
 
 
 # This class is used both in BIG (tizi) and small (mici) UIs
@@ -48,6 +50,10 @@ class BodyLayout(Widget):
     self._was_awake = False
     self._scene = ASLEEP
     self._scene_until = 0.
+    self._reaction = NORMAL
+    self._reaction_until = 0.
+    self._spin_start: float | None = None
+    self._plug_time = 0.
     self._charging = False
     self._battery = 0.
     self._battery_time = 0.
@@ -74,6 +80,7 @@ class BodyLayout(Widget):
 
   def _update_battery(self, sm):
     now = time.monotonic()
+    was_charging = self._charging
     if ui_state.is_onroad() and sm.recv_frame['carState'] > 0:
       self._charging, self._battery, self._battery_time = sm['carState'].charging, sm['carState'].fuelGauge, now
     for dat in messaging.drain_sock_raw(self._can_sock):
@@ -85,6 +92,16 @@ class BodyLayout(Widget):
           self._charging, self._battery, self._battery_time = bool(c.dat[3] & 1), (c.dat[3] >> 1) / 100., now
     if now - self._battery_time > BODY_DATA_TIMEOUT:
       self._charging = False
+
+    if self._charging != was_charging:
+      if self._charging:
+        self._plug_time = now
+      if ui_state.is_onroad():
+        self._react(HAPPY if self._charging else SURPRISED)
+
+  def _react(self, animation):
+    self._reaction = animation
+    self._reaction_until = time.monotonic() + duration(animation)
 
   def _update_state(self):
     super()._update_state()
@@ -103,12 +120,24 @@ class BodyLayout(Widget):
       if has_input:
         self._last_input_time = time.monotonic()
 
+      # spinning in place for a while makes it dizzy once it stops
+      steer_axis = sm['testJoystick'].axes[1] if len(sm['testJoystick'].axes) > 1 else 0
+      if abs(steer_axis) > SPIN_STEER and abs(cs.vEgo) < SPIN_SPEED:
+        if self._spin_start is None:
+          self._spin_start = time.monotonic()
+      else:
+        if self._spin_start is not None and time.monotonic() - self._spin_start > SPIN_TIME:
+          self._react(DIZZY)
+        self._spin_start = None
+
       if time.monotonic() < self._yawn_until:
         self._animator.set_animation(YAWN)
+      elif time.monotonic() < self._reaction_until:
+        self._animator.set_animation(self._reaction)
       elif time.monotonic() < self._wink_until:
         self._animator.set_animation(WINK)
       elif has_input:
-        self._animator.set_animation(NORMAL)
+        self._animator.set_animation(FOCUSED if abs(cs.vEgo) > FAST_SPEED else NORMAL)
       elif self._charging:
         self._animator.set_animation(CONTENT)
       elif sm.recv_frame['carState'] > 0 and cs.fuelGauge < LOW_BATTERY:
@@ -148,6 +177,8 @@ class BodyLayout(Widget):
     super()._handle_mouse_release(mouse_pos)
     if not self._was_active:
       self._animator.set_animation(SLEEPY)
+    else:
+      self._react(HAPPY)  # a pat on the head
 
   def _render(self, rect: rl.Rectangle):
     dots = self._animator.get_dots()
@@ -160,11 +191,6 @@ class BodyLayout(Widget):
       dots = [d for d in dots if d not in remove_set]
     self.draw_dot_grid(rect, dots, rl.WHITE)
 
-    # pulsing red dot while someone is connected and driving
-    if self._teleop_connected:
-      pulse = 0.7 + 0.3 * (0.5 - 0.5 * math.cos(2 * math.pi * time.monotonic() / 1.2))
-      self.draw_dot_grid(rect, [(*LIVE_DOT, pulse)], rl.Color(255, 60, 50, 255))
-
     # the sleeping face is dimmed behind the text; scenes have the screen to themselves at full brightness
     if ui_state.is_offroad() and animation not in OFFROAD_SCENES:
       rl.draw_rectangle(int(self.rect.x), int(self.rect.y), int(self.rect.width), int(self.rect.height), rl.Color(0, 0, 0, 175))
@@ -172,13 +198,13 @@ class BodyLayout(Widget):
       self._offroad_label.set_text(f"charging {round(self._battery * 100)}%" if self._charging else "switch to drive mode to use")
       self._offroad_label.render(upper_half)
 
-    # charge meter above the face: filled dots for the battery level, the next one pulses while charging.
-    # drawn last so it stays bright over the dimmed offroad face
+    # charge meter above the face. drawn after the dimming so it stays bright over the sleeping face
     if self._charging:
-      filled = min(int(self._battery * len(BATTERY_METER)), len(BATTERY_METER))
-      self.draw_dot_grid(rect, BATTERY_METER[filled:], METER_EMPTY)
-      self.draw_dot_grid(rect, BATTERY_METER[:filled], METER_GREEN)
-      if filled < len(BATTERY_METER):
-        # the dot being filled swells and shrinks
-        pulse = 0.35 + 0.65 * (0.5 - 0.5 * math.cos(2 * math.pi * time.monotonic() / 1.6))
-        self.draw_dot_grid(rect, [(*BATTERY_METER[filled], pulse)], METER_GREEN)
+      now = time.monotonic()
+      for dot, color in battery_meter(self._battery, now, now - self._plug_time):
+        self.draw_dot_grid(rect, [dot], rl.Color(*color))
+
+    # pulsing red dot while someone is connected and driving
+    if self._teleop_connected:
+      pulse = 0.7 + 0.3 * (0.5 - 0.5 * math.cos(2 * math.pi * time.monotonic() / 1.2))
+      self.draw_dot_grid(rect, [(*LIVE_DOT, pulse)], rl.Color(255, 60, 50, 255))

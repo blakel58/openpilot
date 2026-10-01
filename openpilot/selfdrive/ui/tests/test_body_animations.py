@@ -49,3 +49,25 @@ class TestBodyAnimations(unittest.TestCase):
         animator.set_animation(scene)
         assert animator.get_dots() == scene.frames[i]
         assert animator._animation is scene and not animator._rewinding
+
+  def test_reactions_start_right_away(self):
+    # a looping face resting on its first frame hands over immediately, even before its first blink
+    from openpilot.selfdrive.ui.body.animations import HAPPY
+    animator = FaceAnimator(NORMAL)
+    animator._start_time = time.monotonic() - 2.0   # resting between blinks, has blinked zero times as far as it knows
+    animator._seen_nonzero = False
+    animator.set_animation(HAPPY)
+    animator.get_dots()
+    assert animator._animation is HAPPY
+
+  def test_battery_meter(self):
+    from openpilot.selfdrive.ui.body.animations import METER_EMPTY, battery_meter, meter_color
+    # just plugged in: nothing has filled in yet
+    assert all(color == METER_EMPTY for _, color in battery_meter(0.6, 0., 0.))
+    # settled: 4 of 8 filled, 4 empty, plus the next dot swelling
+    meter = battery_meter(0.5, 10., 10.)
+    assert sum(color == METER_EMPTY for _, color in meter) == 4
+    assert sum(color == meter_color(0.5) for _, color in meter) == 5
+    # full: every dot filled, nothing left to swell
+    assert len(battery_meter(1.0, 10., 10.)) == len(BATTERY_METER)
+    assert meter_color(0.05)[0] > meter_color(0.05)[1] and meter_color(0.95)[1] > meter_color(0.95)[0]
