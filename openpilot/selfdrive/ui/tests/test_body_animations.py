@@ -14,7 +14,9 @@ class TestBodyAnimations(unittest.TestCase):
     assert {"NORMAL", "ASLEEP", "SLEEPY", "INQUISITIVE", "TIRED", "CONTENT", "WINK"} <= set(anims)
     for name, anim in anims.items():
       for frame in anim.frames + (anim.starting_frames or []):
-        assert all(0 <= r < GRID_ROWS and 0 <= c < GRID_COLS for r, c in frame), name
+        # a dot is (row, col) or (row, col, size)
+        assert all(0 <= d[0] <= GRID_ROWS - 1 and 0 <= d[1] <= GRID_COLS - 1 for d in frame), name
+        assert all(0 < d[2] <= 2 for d in frame if len(d) > 2), name
         # the live indicator must never be mistaken for part of a face
         # (scenes roll along the bottom row; they only play asleep, and the red dot draws on top anyway)
         assert anim in OFFROAD_SCENES or LIVE_DOT not in frame, name

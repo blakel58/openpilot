@@ -1,3 +1,4 @@
+import math
 import random
 import time
 import pyray as rl
@@ -52,7 +53,7 @@ class BodyLayout(Widget):
     self._battery_time = 0.
     # offroad, card isn't running to parse the body's CAN into carState, so read BODY_DATA here
     self._can_sock = messaging.sub_sock('can', conflate=False, timeout=0)
-    self._offroad_label = UnifiedLabel("drive mode to wake", 95 if gui_app.big_ui() else 45, FontWeight.DISPLAY,
+    self._offroad_label = UnifiedLabel("switch to drive mode to use", 95 if gui_app.big_ui() else 45, FontWeight.DISPLAY,
                                        alignment=TextAlignment.CENTER,
                                        alignment_vertical=TextAlignmentVertical.MIDDLE)
 
@@ -65,10 +66,11 @@ class BodyLayout(Widget):
     offset_x = rect.x + (rect.width - grid_w) / 2
     offset_y = rect.y + (rect.height - grid_h) / 2
 
-    for row, col in dots:
-      x = int(offset_x + col * spacing)
-      y = int(offset_y + row * spacing)
-      rl.draw_circle(x, y, DOT_RADIUS, color)
+    # a dot is (row, col) or (row, col, size); size scales the radius
+    for dot in dots:
+      x = int(offset_x + dot[1] * spacing)
+      y = int(offset_y + dot[0] * spacing)
+      rl.draw_circle(x, y, DOT_RADIUS * (dot[2] if len(dot) > 2 else 1.), color)
 
   def _update_battery(self, sm):
     now = time.monotonic()
@@ -159,15 +161,15 @@ class BodyLayout(Widget):
     self.draw_dot_grid(rect, dots, rl.WHITE)
 
     # pulsing red dot while someone is connected and driving
-    if self._teleop_connected and time.monotonic() % 1.0 < 0.7:
-      self.draw_dot_grid(rect, [LIVE_DOT], rl.Color(255, 60, 50, 255))
+    if self._teleop_connected:
+      pulse = 0.7 + 0.3 * (0.5 - 0.5 * math.cos(2 * math.pi * time.monotonic() / 1.2))
+      self.draw_dot_grid(rect, [(*LIVE_DOT, pulse)], rl.Color(255, 60, 50, 255))
 
-    if ui_state.is_offroad():
-      # the sleeping face is dimmed behind the text; scenes play at full brightness
-      if animation not in OFFROAD_SCENES:
-        rl.draw_rectangle(int(self.rect.x), int(self.rect.y), int(self.rect.width), int(self.rect.height), rl.Color(0, 0, 0, 175))
+    # the sleeping face is dimmed behind the text; scenes have the screen to themselves at full brightness
+    if ui_state.is_offroad() and animation not in OFFROAD_SCENES:
+      rl.draw_rectangle(int(self.rect.x), int(self.rect.y), int(self.rect.width), int(self.rect.height), rl.Color(0, 0, 0, 175))
       upper_half = rl.Rectangle(rect.x, rect.y, rect.width, rect.height / 2)
-      self._offroad_label.set_text(f"charging {round(self._battery * 100)}%" if self._charging else "drive mode to wake")
+      self._offroad_label.set_text(f"charging {round(self._battery * 100)}%" if self._charging else "switch to drive mode to use")
       self._offroad_label.render(upper_half)
 
     # charge meter above the face: filled dots for the battery level, the next one pulses while charging.
@@ -176,5 +178,7 @@ class BodyLayout(Widget):
       filled = min(int(self._battery * len(BATTERY_METER)), len(BATTERY_METER))
       self.draw_dot_grid(rect, BATTERY_METER[filled:], METER_EMPTY)
       self.draw_dot_grid(rect, BATTERY_METER[:filled], METER_GREEN)
-      if filled < len(BATTERY_METER) and time.monotonic() % 1.2 < 0.6:
-        self.draw_dot_grid(rect, [BATTERY_METER[filled]], METER_GREEN)
+      if filled < len(BATTERY_METER):
+        # the dot being filled swells and shrinks
+        pulse = 0.35 + 0.65 * (0.5 - 0.5 * math.cos(2 * math.pi * time.monotonic() / 1.6))
+        self.draw_dot_grid(rect, [(*BATTERY_METER[filled], pulse)], METER_GREEN)

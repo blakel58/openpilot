@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
+import math
 import time
 
 
@@ -36,9 +37,14 @@ def _mirror_no_flip(dots: list[tuple[int, int]]) -> list[tuple[int, int]]:
   return [(r, 15 - max_c - min_c + c) for r, c in dots]
 
 
-def _shift(dots: list[tuple[int, int]], rc: tuple[int, int]) -> list[tuple[int, int]]:
+def _shift(dots: list[tuple], rc: tuple[float, float]) -> list[tuple]:
+  # a dot is (row, col) or (row, col, size); size scales the dot's radius and defaults to 1
   dr, dc = rc
-  return [(r + dr, c + dc) for r, c in dots]
+  return [(d[0] + dr, d[1] + dc, *d[2:]) for d in dots]
+
+
+def _sized(dots: list[tuple], size: float) -> list[tuple]:
+  return [(d[0], d[1], size * (d[2] if len(d) > 2 else 1.)) for d in dots]
 
 
 def _make_frame(left_eye: list[tuple[int, int]], right_eye: list[tuple[int, int]],
@@ -209,34 +215,68 @@ MOUTH_OPEN = [
         (7, 7), (7, 8),
 ]
 
-# a tiny comma body rolling to the right: head, pole and wheel base. like the real one,
-# it leans into the direction it's driving
-_BODY_RIGHT = [
-        (0, 1), (0, 2), (0, 3),
-        (1, 1), (1, 2), (1, 3),
-                (2, 2),
-        (3, 1),
-(4, 0), (4, 1), (4, 2),
-]
-_BODY_LEFT = [(r, 3 - c) for r, c in _BODY_RIGHT]
-_COMMA = [(0, 0), (0, 1), (1, 0), (1, 1), (2, 1), (3, 0)]
+# sprites are drawn finer than the face: small dots on a half-dot grid, big dots for wheels
+_FINE = 0.42
+
+# a tiny comma body: an outlined screen with two eyes, a neck, and its two wheels
+_BODY = (
+  [(0., c / 2, _FINE) for c in range(7)] + [(1.5, c / 2, _FINE) for c in range(7)] +   # screen top and bottom
+  [(0.5, 0., _FINE), (1., 0., _FINE), (0.5, 3., _FINE), (1., 3., _FINE)] +             # screen sides
+  [(0.75, 1., 0.6), (0.75, 2., 0.6)] +                                                 # eyes
+  [(2., 1.5, _FINE), (2.5, 1.5, _FINE), (3., 1.5, _FINE)] +                            # neck
+  [(3.9, 0.5, 1.05), (3.9, 2.5, 1.05), (3.9, 1.5, _FINE)]                              # wheels and axle
+)
+# a comma: a big dot with a tail that tapers away
+_COMMA = [(0., 0.5, 1.25), (0.95, 0.7, 0.8), (1.6, 0.45, 0.55), (2.05, 0.1, 0.35)]
 
 
-def _place(dots: list[tuple[int, int]], rc: tuple[int, int]) -> list[tuple[int, int]]:
-  """Move a sprite and drop whatever falls off the grid."""
-  return [(r, c) for r, c in _shift(dots, rc) if 0 <= r < GRID_ROWS and 0 <= c < GRID_COLS]
+def _scaled(dots: list[tuple], k: float) -> list[tuple]:
+  return [(d[0] * k, d[1] * k, d[2] * k) for d in dots]
+
+
+_BODY = _scaled(_BODY, 1.35)
+_COMMA = _scaled(_COMMA, 1.35)
+_BODY_ROW = 7 - 3.9 * 1.35  # wheels sit on the bottom row
+_Z = [(0., 0.), (0., 0.5), (0., 1.), (0.5, 0.5), (1., 0.), (1., 0.5), (1., 1.)]
+
+# sprites move a quarter of a dot at a time so they glide instead of stepping
+_GLIDE_STEP = 0.25
+_GLIDE_FRAME = 0.05  # seconds per step: 5 dots per second
+
+
+def _place(dots: list[tuple], rc: tuple[float, float]) -> list[tuple]:
+  """Move a sprite (by any fraction of a dot) and drop whatever falls off the grid."""
+  return [d for d in _shift(dots, rc) if 0 <= d[0] <= GRID_ROWS - 1 and 0 <= d[1] <= GRID_COLS - 1]
+
+
+def _glide(start: float, end: float) -> list[float]:
+  """Column positions from start to end in quarter-dot steps."""
+  steps = round(abs(end - start) / _GLIDE_STEP)
+  return [start + (end - start) * i / steps for i in range(steps + 1)]
 
 
 _SLEEP_FACE = _make_frame(EYE_CLOSED, _mirror(EYE_CLOSED), [], [], MOUTH_NORMAL)
 
-# slow breathing: the face rises as it breathes in, and a "z" drifts off as it breathes out
-_SLEEP_FACE_UP = _shift(_SLEEP_FACE, (-1, 0))
-_Z = [(0, 0), (0, 1), (0, 2), (1, 1), (2, 0), (2, 1), (2, 2)]
-_SLEEP_FACE_Z = _SLEEP_FACE + _place(_Z, (0, 13))
-_BREATH = [_SLEEP_FACE_UP, _SLEEP_FACE_UP, _SLEEP_FACE_Z, _SLEEP_FACE_Z, _SLEEP_FACE]
+# slow breathing: the face swells a little on each breath, and a z grows as it floats away
+_BREATH_PERIOD = 4.0  # seconds per breath
+_SNORE_FRAME = 0.05
+
+
+def _snore_frame(t: float) -> list[tuple]:
+  phase = (t % _BREATH_PERIOD) / _BREATH_PERIOD
+  frame = _sized(_SLEEP_FACE, 1. + 0.12 * math.sin(math.pi * phase) ** 2)
+  # (dot size, row, col): it rises through the gap between the eyes during the out-breath
+  # one z at a time, so they read as a single z growing as it rises
+  for i, (size, row, col) in enumerate(((0.25, 5.2, 8.6), (0.34, 3.5, 8.7), (0.44, 1.4, 8.6))):
+    appear = 0.4 + i * 0.16
+    if appear <= phase < appear + 0.16:
+      frame += _sized(_shift([(r * 3.8 * size, c * 3.8 * size) for r, c in _Z], (row, col)), size)
+  return frame
+
+
 SNORE = Animation(
-  frames=[_SLEEP_FACE] + _BREATH * 3,
-  frame_duration=0.5,
+  frames=[_SLEEP_FACE] + [_snore_frame(i * _SNORE_FRAME) for i in range(round(2 * _BREATH_PERIOD / _SNORE_FRAME))] + [_SLEEP_FACE],
+  frame_duration=_SNORE_FRAME,
   mode=AnimationMode.ONCE_FORWARD,
 )
 
@@ -259,13 +299,13 @@ PEEK = Animation(
 )
 
 # the tiny body rolls across the screen
-ROLL = Animation(frames=[_place(_BODY_RIGHT, (3, c)) for c in range(-4, GRID_COLS + 1)], frame_duration=0.2, mode=AnimationMode.ONCE_FORWARD)
-ROLL_BACK = Animation(frames=[_place(_BODY_LEFT, (3, c)) for c in range(GRID_COLS, -5, -1)], frame_duration=0.2, mode=AnimationMode.ONCE_FORWARD)
+ROLL = Animation(frames=[_place(_BODY, (_BODY_ROW, c)) for c in _glide(-4.5, GRID_COLS)], frame_duration=_GLIDE_FRAME, mode=AnimationMode.ONCE_FORWARD)
+ROLL_BACK = Animation(frames=ROLL.frames[::-1], frame_duration=_GLIDE_FRAME, mode=AnimationMode.ONCE_FORWARD)
 
-# a comma hops across with the tiny body rolling after it
+# a comma hops across in arcs, one hop every three dots, with the tiny body rolling after it
 CHASE = Animation(
-  frames=[_place(_COMMA, (3 if c % 2 else 2, c + 7)) + _place(_BODY_RIGHT, (3, c)) for c in range(-10, GRID_COLS + 1)],
-  frame_duration=0.24,
+  frames=[_place(_COMMA, (4.0 - 1.8 * abs(math.sin(math.pi * c / 3)), c + 7.5)) + _place(_BODY, (_BODY_ROW, c)) for c in _glide(-11.5, GRID_COLS)],
+  frame_duration=_GLIDE_FRAME,
   mode=AnimationMode.ONCE_FORWARD,
 )
 
