@@ -22,6 +22,7 @@ from openpilot.system.webrtc.helpers import StreamRequestBody
 from openpilot.system.webrtc.schema import generate_field
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
+from openpilot.system.body_privacy import connect_allowed
 from openpilot.cereal import messaging, log
 
 SESSION_TIMEOUT_SECONDS = 300
@@ -42,6 +43,31 @@ def _default_route_ip() -> str | None:
     return None
   finally:
     s.close()
+
+@contextlib.contextmanager
+def local_only_ice(enabled: bool):
+  """Build streams without a STUN server.
+
+  teleoprtc always asks stun.l.google.com for the device's public address. A comma body
+  with comma connect off is only reached over the local network, where the host
+  candidates are enough, so it has no reason to tell a third party it's streaming.
+  """
+  if not enabled:
+    yield
+    return
+
+  from teleoprtc import stream as teleoprtc_stream
+
+  class LocalOnlyConfiguration(teleoprtc_stream.Configuration):
+    ice_servers = property(lambda self: [], lambda self, value: None)
+
+  original = teleoprtc_stream.Configuration
+  teleoprtc_stream.Configuration = LocalOnlyConfiguration
+  try:
+    yield
+  finally:
+    teleoprtc_stream.Configuration = original
+
 
 class AsyncTaskRunner:
   def __init__(self):
@@ -241,7 +267,8 @@ class StreamSession:
       track = LiveStreamVideoStreamTrack(camera, self.enabled)
       self.video_tracks.append(track)
       builder.add_video_stream(camera, track)
-    self.stream = builder.stream()
+    with local_only_ice(not connect_allowed(self.params)):
+      self.stream = builder.stream()
 
     self.is_body = "testJoystick" in body.bridge_services_in
 

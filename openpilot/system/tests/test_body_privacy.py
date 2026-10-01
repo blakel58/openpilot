@@ -100,3 +100,15 @@ class TestBodyPrivacy(OpenpilotTestCase):
 
   def test_no_gps_on_private_body(self):
     assert not qcomgps(True, self.params, self._drive(True))
+
+  def test_private_body_streams_without_stun(self):
+    from teleoprtc import stream as teleoprtc_stream
+    from openpilot.system.webrtc.webrtcd import local_only_ice
+    stock = teleoprtc_stream.Configuration
+    with local_only_ice(True):
+      config = teleoprtc_stream.Configuration()
+      config.ice_servers = [teleoprtc_stream.IceServer("stun:stun.l.google.com:19302")]
+      assert len(stock.ice_servers.__get__(config)) == 0
+    assert teleoprtc_stream.Configuration is stock
+    with local_only_ice(False):
+      assert teleoprtc_stream.Configuration is stock
