@@ -33,8 +33,8 @@ STATUS_COLOR = (80, 220, 130, 255)   # the microphone badge while the body is do
 BADGE_HEIGHT = 0.1         # of the screen's height
 WINK_DURATION = 1.5        # seconds the wink plays when someone connects
 # offroad the screen only stays on for 30s after a touch, so scenes are timed from when it wakes
-SCENE_FIRST_DELAY = 2.0    # seconds after the screen wakes before the first scene plays
-SCENE_GAP = (4.0, 8.0)     # seconds of plain sleep between scenes
+SCENE_FIRST_DELAY = 20.0   # seconds after the screen wakes before a scene plays: a glance at it shows it asleep, not performing
+SCENE_GAP = (90.0, 180.0)  # seconds of plain sleep between scenes: with the screen going off after 30s, one scene a wake at most
 BODY_DATA_ADDR = 0x203     # BODY_DATA in comma_body.dbc, sent by the body at 1Hz even when offroad
 BODY_DATA_TIMEOUT = 5.0    # seconds before the last offroad battery reading is stale
 FAST_SPEED = 0.45          # m/s — above this the face concentrates
